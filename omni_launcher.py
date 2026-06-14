@@ -1,4 +1,4 @@
-# COMMANDE DE GENERATION DE .EXE : pyinstaller --clean --noconsole --onedir --icon=home_launcher.ico home_launcher.py
+# COMMANDE DE GENERATION DE .EXE : pyinstaller --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
 
 import io
 import os
@@ -84,12 +84,12 @@ def _creer_shell():
 class GameLauncherApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Home Launcher")
+        self.root.title("Omni Launcher")
         self.root.geometry(RESOLUTION)
         self.root.configure(bg=BG_MAIN)
 
         try:
-            self.root.iconbitmap("home_launcher.ico")
+            self.root.iconbitmap("omni_launcher.ico")
         except tk.TclError:
             pass
 
