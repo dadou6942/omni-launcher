@@ -2,6 +2,8 @@
 
 import io
 import os
+import sys
+import json
 import shutil
 import subprocess
 import time
@@ -33,15 +35,12 @@ except ImportError:
     raise SystemExit(1)
 
 # ---------------------------------------------------------------------------
-# Constantes
+# Constantes et Configuration dynamique
 # ---------------------------------------------------------------------------
-DOSSIER_JEUX = r"D:\Games\RACCOURCIS_JEUX"
-DOSSIER_IMAGES = os.path.join(DOSSIER_JEUX, "images")
 RESOLUTION = "1200x800"
-
 TAILLE_ICONE_NORMAL = 140
 TAILLE_ICONE_MAXIMISE = 150
-MAX_COLONNES_RESET = 25  # Nombre de colonnes au-delà desquelles on réinitialise le poids
+MAX_COLONNES_RESET = 25
 
 EXTENSIONS_IMAGES = (".png", ".jpg", ".ico")
 CARACTERES_INTERDITS = set('\\/:*?"<>|')
@@ -61,6 +60,34 @@ COLOR_BORDER = "#4a4a4a"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _get_app_dir() -> str:
+    """Détecte l'emplacement réel de l'exécutable ou du script."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+FICHIER_CONFIG = os.path.join(_get_app_dir(), "config.json")
+
+
+def _charger_config() -> dict:
+    if os.path.exists(FICHIER_CONFIG):
+        try:
+            with open(FICHIER_CONFIG, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _sauvegarder_config(config: dict) -> None:
+    try:
+        with open(FICHIER_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Erreur de sauvegarde config : {e}")
+
 
 def _image_valide(chemin: str) -> bool:
     """Renvoie True si le fichier existe et n'est pas vide."""
@@ -93,65 +120,69 @@ class GameLauncherApp:
         except tk.TclError:
             pass
 
+        # Chargement de la configuration
+        self.config = _charger_config()
+        dossier_defaut = os.path.join(_get_app_dir(), "RACCOURCIS_JEUX")
+        self.dossier_jeux = self.config.get("dossier_jeux", dossier_defaut)
+        self.dossier_images = os.path.join(self.dossier_jeux, "images")
+
+        os.makedirs(self.dossier_jeux, exist_ok=True)
+        os.makedirs(self.dossier_images, exist_ok=True)
+
         self.boutons_jeux: list[tk.Button] = []
         self.images_references: list[ImageTk.PhotoImage] = []
         self.raccourcis_liste: list[dict] = []
         self.colonnes_actuelles: int = 0
         self.est_maximise_precedent: bool = False
 
-        self._construire_interface()
+        # --- Création des deux "Vues" principales (Panneaux) ---
+        self.frame_bibliotheque = tk.Frame(self.root, bg=BG_MAIN)
+        self.frame_parametres = tk.Frame(self.root, bg=BG_MAIN)
 
-        os.makedirs(DOSSIER_IMAGES, exist_ok=True)
+        self._construire_vue_bibliotheque()
+        self._construire_vue_parametres()
+
+        # On affiche la bibliothèque par défaut au démarrage
+        self.frame_bibliotheque.pack(fill="both", expand=True)
 
         self.analyser_dossier_jeux()
         self.redessiner_bibliotheque(TAILLE_ICONE_NORMAL)
 
     # ------------------------------------------------------------------
-    # Construction de l'interface
+    # Vue : Bibliothèque
     # ------------------------------------------------------------------
 
-    def _construire_interface(self) -> None:
-        """Crée tous les widgets statiques de la fenêtre principale."""
+    def _construire_vue_bibliotheque(self) -> None:
+        """Crée l'interface de la bibliothèque de jeux."""
         # En-tête
-        header_frame = tk.Frame(self.root, bg=BG_MAIN)
+        header_frame = tk.Frame(self.frame_bibliotheque, bg=BG_MAIN)
         header_frame.pack(fill="x", padx=30, pady=20)
 
         tk.Label(
-            header_frame,
-            text="Bibliothèque",
-            font=("Segoe UI", 24, "bold"),
-            fg=COLOR_FG,
-            bg=BG_MAIN,
+            header_frame, text="Bibliothèque", font=("Segoe UI", 24, "bold"), fg=COLOR_FG, bg=BG_MAIN
         ).pack(side="left")
 
+        # Bouton Paramètres (qui change la vue)
         tk.Button(
-            header_frame,
-            text="+ Ajouter un jeu",
-            font=("Segoe UI", 12, "bold"),
-            fg=COLOR_FG,
-            bg=BG_BTN,
-            activebackground=BG_BTN_HOVER,
-            activeforeground=COLOR_FG,
-            bd=0,
-            cursor="hand2",
-            padx=15,
-            pady=8,
-            command=self.ajouter_nouveau_jeu,
+            header_frame, text="⚙ Paramètres", font=("Segoe UI", 12, "bold"), fg=COLOR_FG, bg=BG_MENU,
+            activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=0, cursor="hand2", padx=15, pady=8,
+            command=self.afficher_vue_parametres
         ).pack(side="right")
 
+        # Bouton Ajouter un jeu
+        tk.Button(
+            header_frame, text="+ Ajouter un jeu", font=("Segoe UI", 12, "bold"), fg=COLOR_FG, bg=BG_BTN,
+            activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=0, cursor="hand2", padx=15, pady=8,
+            command=self.ajouter_nouveau_jeu
+        ).pack(side="right", padx=(0, 15))
+
         # Zone scrollable
-        self.canvas = tk.Canvas(self.root, bg=BG_MAIN, highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        self.canvas = tk.Canvas(self.frame_bibliotheque, bg=BG_MAIN, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.frame_bibliotheque, orient="vertical", command=self.canvas.yview)
         self.scrollable_frame = tk.Frame(self.canvas, bg=BG_MAIN)
 
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
-        )
-
-        self.canvas_window = self.canvas.create_window(
-            (0, 0), window=self.scrollable_frame, anchor="nw"
-        )
+        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
         self.canvas.pack(side="left", fill="both", expand=True, padx=20, pady=10)
@@ -161,19 +192,97 @@ class GameLauncherApp:
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
     # ------------------------------------------------------------------
+    # Vue : Paramètres (En interne)
+    # ------------------------------------------------------------------
+
+    def _construire_vue_parametres(self) -> None:
+        """Crée l'interface des paramètres."""
+        # En-tête des paramètres avec le bouton de retour
+        header_param = tk.Frame(self.frame_parametres, bg=BG_MAIN)
+        header_param.pack(fill="x", padx=30, pady=20)
+
+        tk.Button(
+            header_param, text="⬅ Retour à la bibliothèque", font=("Segoe UI", 12, "bold"), fg=COLOR_FG, bg=BG_BTN,
+            activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=0, cursor="hand2", padx=15, pady=8,
+            command=self.afficher_vue_bibliotheque
+        ).pack(side="left")
+
+        # Contenu centré des paramètres
+        content_param = tk.Frame(self.frame_parametres, bg=BG_MAIN)
+        content_param.pack(expand=True)
+
+        tk.Label(
+            content_param, text="Configuration du Launcher", font=("Segoe UI", 24, "bold"), fg=COLOR_FG, bg=BG_MAIN
+        ).pack(pady=(0, 30))
+
+        tk.Label(
+            content_param, text="Dossier actuel de la bibliothèque :", font=("Segoe UI", 12), fg=COLOR_FG_MUTED,
+            bg=BG_MAIN
+        ).pack()
+
+        # On garde une référence à ce label pour pouvoir le mettre à jour
+        self.lbl_chemin_dossier = tk.Label(
+            content_param, text=self.dossier_jeux, font=("Segoe UI", 12, "bold"), fg=COLOR_ACCENT, bg=BG_MAIN,
+            wraplength=800
+        )
+        self.lbl_chemin_dossier.pack(pady=(10, 40))
+
+        tk.Button(
+            content_param, text="📁 Modifier l'emplacement...", font=("Segoe UI", 12, "bold"), fg=COLOR_FG, bg=BG_BTN,
+            activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=0, cursor="hand2", padx=20, pady=12,
+            command=self.changer_dossier_jeux
+        ).pack()
+
+    def changer_dossier_jeux(self):
+        """Ouvre l'explorateur pour choisir un nouveau dossier de jeux."""
+        nouveau_dossier = filedialog.askdirectory(
+            title="Sélectionnez le dossier de vos raccourcis",
+            initialdir=self.dossier_jeux
+        )
+        if nouveau_dossier:
+            self.dossier_jeux = os.path.normpath(nouveau_dossier)
+            self.dossier_images = os.path.join(self.dossier_jeux, "images")
+
+            os.makedirs(self.dossier_jeux, exist_ok=True)
+            os.makedirs(self.dossier_images, exist_ok=True)
+
+            # Sauvegarde du choix
+            self.config["dossier_jeux"] = self.dossier_jeux
+            _sauvegarder_config(self.config)
+
+            # Met à jour le texte affiché
+            self.lbl_chemin_dossier.config(text=self.dossier_jeux)
+
+            # Recharge les jeux en arrière-plan
+            self._rafraichir_bibliotheque()
+            messagebox.showinfo("Succès",
+                                "Le dossier de la bibliothèque a été modifié.\n\nLes jeux existants dans ce dossier ont été automatiquement importés !",
+                                parent=self.root)
+
+    # --- Fonctions de navigation entre les vues ---
+    def afficher_vue_parametres(self):
+        self.frame_bibliotheque.pack_forget()
+        self.frame_parametres.pack(fill="both", expand=True)
+
+    def afficher_vue_bibliotheque(self):
+        self.frame_parametres.pack_forget()
+        self.frame_bibliotheque.pack(fill="both", expand=True)
+        # Force un redimensionnement du canvas pour éviter les bugs d'affichage au retour
+        self._on_canvas_resize(None)
+
+    # ------------------------------------------------------------------
     # Gestion des jeux
     # ------------------------------------------------------------------
 
     def ajouter_nouveau_jeu(self) -> None:
         fichier_exe = filedialog.askopenfilename(
-            title="Sélectionnez l'exécutable du jeu",
-            filetypes=[("Fichiers exécutables", "*.exe")],
+            title="Sélectionnez l'exécutable du jeu", filetypes=[("Fichiers exécutables", "*.exe")]
         )
         if not fichier_exe:
             return
 
         nom_jeu = os.path.splitext(os.path.basename(fichier_exe))[0]
-        chemin_raccourci = os.path.join(DOSSIER_JEUX, f"{nom_jeu}.lnk")
+        chemin_raccourci = os.path.join(self.dossier_jeux, f"{nom_jeu}.lnk")
 
         try:
             shell = _creer_shell()
@@ -188,20 +297,15 @@ class GameLauncherApp:
             messagebox.showerror("Erreur", f"Erreur lors de la création du raccourci :\n{e}")
 
     def analyser_dossier_jeux(self) -> None:
-        """Scanne le dossier, nettoie les raccourcis invalides et peuple raccourcis_liste."""
-        os.makedirs(DOSSIER_JEUX, exist_ok=True)
-
+        """Scanne le dossier dynamique, nettoie et importe automatiquement les .lnk."""
+        os.makedirs(self.dossier_jeux, exist_ok=True)
         shell = _creer_shell()
-
-        raccourcis = [
-            f for f in os.listdir(DOSSIER_JEUX) if f.lower().endswith(".lnk")
-        ]
+        raccourcis = [f for f in os.listdir(self.dossier_jeux) if f.lower().endswith(".lnk")]
 
         for fichier in raccourcis:
             nom_jeu = os.path.splitext(fichier)[0]
-            chemin_complet = os.path.join(DOSSIER_JEUX, fichier)
+            chemin_complet = os.path.join(self.dossier_jeux, fichier)
 
-            # Vérification de la cible
             try:
                 shortcut = shell.CreateShortCut(chemin_complet)
                 fichier_cible = shortcut.TargetPath
@@ -214,19 +318,12 @@ class GameLauncherApp:
                 print(f"Erreur lors de la vérification de '{nom_jeu}' : {e}")
                 continue
 
-            # Extraction de l'icône si nécessaire
-            chemins_images = {
-                ext: os.path.join(DOSSIER_IMAGES, f"{nom_jeu}{ext}")
-                for ext in EXTENSIONS_IMAGES
-            }
+            chemins_images = {ext: os.path.join(self.dossier_images, f"{nom_jeu}{ext}") for ext in EXTENSIONS_IMAGES}
             if not any(_image_valide(p) for p in chemins_images.values()):
                 self.extraire_icone_automatique(chemin_complet, chemins_images[".ico"])
 
-            # Sélection de la meilleure image disponible
-            source_img = next(
-                (chemins_images[ext] for ext in EXTENSIONS_IMAGES if _image_valide(chemins_images[ext])),
-                None,
-            )
+            source_img = next((chemins_images[ext] for ext in EXTENSIONS_IMAGES if _image_valide(chemins_images[ext])),
+                              None)
 
             self.raccourcis_liste.append({
                 "nom": nom_jeu,
@@ -241,7 +338,6 @@ class GameLauncherApp:
             shortcut = shell.CreateShortCut(chemin_lnk)
             fichier_source = shortcut.TargetPath
 
-            # Priorité à l'emplacement d'icône personnalisé
             icon_loc = shortcut.IconLocation
             if icon_loc and "," in icon_loc:
                 source_potentielle = icon_loc.split(",")[0].strip().strip('"')
@@ -258,7 +354,6 @@ class GameLauncherApp:
             extractor = IconExtractor(fichier_source)
             extractor.export_icon(chemin_sortie_ico)
 
-            # Supprimer le fichier vide si l'extraction a échoué silencieusement
             if os.path.exists(chemin_sortie_ico) and os.path.getsize(chemin_sortie_ico) == 0:
                 os.remove(chemin_sortie_ico)
 
@@ -290,7 +385,6 @@ class GameLauncherApp:
                 try:
                     n_frames = getattr(img_pil, "n_frames", 1)
                     if n_frames > 1:
-                        # Sélectionner la frame avec la plus grande résolution
                         tailles = []
                         for i in range(n_frames):
                             img_pil.seek(i)
@@ -308,7 +402,6 @@ class GameLauncherApp:
         except Exception as e:
             print(f"Erreur Pillow pour '{chemin_image}' : {e}")
 
-            # Tentative de sauvetage : chercher un PNG embarqué dans le .ico
             if chemin_image.lower().endswith(".ico"):
                 try:
                     with open(chemin_image, "rb") as f:
@@ -335,7 +428,6 @@ class GameLauncherApp:
         self.boutons_jeux.clear()
         self.images_references.clear()
 
-        # Supprimer les éventuels labels résiduels (ex: message "aucun jeu")
         for widget in self.scrollable_frame.winfo_children():
             if isinstance(widget, tk.Label):
                 widget.destroy()
@@ -344,10 +436,7 @@ class GameLauncherApp:
             tk.Label(
                 self.scrollable_frame,
                 text="Aucun jeu dans votre bibliothèque.\nCliquez sur '+ Ajouter un jeu' en haut à droite.",
-                font=("Segoe UI", 12),
-                fg=COLOR_FG_MUTED,
-                bg=BG_MAIN,
-                pady=50,
+                font=("Segoe UI", 12), fg=COLOR_FG_MUTED, bg=BG_MAIN, pady=50,
             ).pack()
             return
 
@@ -357,26 +446,15 @@ class GameLauncherApp:
             else:
                 img_pil = self.creer_image_par_defaut(taille_icone)
 
-            img_pil = img_pil.convert("RGBA").resize(
-                (taille_icone, taille_icone), Image.Resampling.LANCZOS
-            )
+            img_pil = img_pil.convert("RGBA").resize((taille_icone, taille_icone), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img_pil)
             self.images_references.append(photo)
 
             btn = tk.Button(
-                self.scrollable_frame,
-                text=jeu["nom"],
-                image=photo,
-                compound="top",
-                font=("Segoe UI", 10, "bold"),
-                fg=COLOR_FG,
-                bg=BG_MAIN,
-                activebackground="#1e1e1e",
-                activeforeground=COLOR_FG,
-                bd=0,
-                cursor="hand2",
-                pady=10,
-                wraplength=taille_icone + 20,
+                self.scrollable_frame, text=jeu["nom"], image=photo, compound="top",
+                font=("Segoe UI", 10, "bold"), fg=COLOR_FG, bg=BG_MAIN,
+                activebackground="#1e1e1e", activeforeground=COLOR_FG, bd=0, cursor="hand2",
+                pady=10, wraplength=taille_icone + 20,
             )
 
             btn.bind("<Double-Button-1>", lambda e, ch=jeu["chemin"]: self.lancer_jeu(ch))
@@ -389,31 +467,14 @@ class GameLauncherApp:
 
     def afficher_menu_contextuel(self, event: tk.Event, jeu: dict, btn: tk.Button) -> None:
         menu = tk.Menu(
-            self.root,
-            tearoff=0,
-            bg=BG_MENU,
-            fg=COLOR_FG,
-            activebackground=BG_BTN_HOVER,
-            activeforeground=COLOR_FG,
-            bd=1,
+            self.root, tearoff=0, bg=BG_MENU, fg=COLOR_FG,
+            activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=1,
         )
-        menu.add_command(
-            label="Ouvrir le dossier du jeu",
-            command=lambda: self.ouvrir_dossier_jeu(jeu["chemin"]),
-        )
-        menu.add_command(
-            label="Renommer le jeu",
-            command=lambda: self.activer_renommage_inline(jeu, btn),
-        )
-        menu.add_command(
-            label="Retirer du launcher",
-            command=lambda: self.retirer_jeu_launcher(jeu),
-        )
+        menu.add_command(label="Ouvrir le dossier du jeu", command=lambda: self.ouvrir_dossier_jeu(jeu["chemin"]))
+        menu.add_command(label="Renommer le jeu", command=lambda: self.activer_renommage_inline(jeu, btn))
+        menu.add_command(label="Retirer du launcher", command=lambda: self.retirer_jeu_launcher(jeu))
         menu.add_separator()
-        menu.add_command(
-            label="Supprimer définitivement le jeu",
-            command=lambda: self.supprimer_jeu(jeu),
-        )
+        menu.add_command(label="Supprimer définitivement le jeu", command=lambda: self.supprimer_jeu(jeu))
         menu.post(event.x_root, event.y_root)
 
     # ------------------------------------------------------------------
@@ -426,18 +487,14 @@ class GameLauncherApp:
             self.root.after(3000, self.root.destroy)
         except OSError as e:
             if getattr(e, "winerror", None) == 1223:
-                # Erreur UAC : fallback via l'Explorateur Windows en processus détaché
                 try:
                     subprocess.Popen(
                         ["explorer.exe", chemin_raccourci],
-                        close_fds=True,
-                        creationflags=0x00000008,  # DETACHED_PROCESS
+                        close_fds=True, creationflags=0x00000008,
                     )
                     self.root.after(3000, self.root.destroy)
                 except Exception as fallback_err:
-                    messagebox.showerror(
-                        "Erreur", f"Même l'Explorateur n'a pas pu lancer le jeu :\n{fallback_err}"
-                    )
+                    messagebox.showerror("Erreur", f"Même l'Explorateur n'a pas pu lancer le jeu :\n{fallback_err}")
             else:
                 messagebox.showerror("Erreur", f"Erreur système lors du lancement :\n{e}")
         except Exception as e:
@@ -457,7 +514,6 @@ class GameLauncherApp:
             print(f"Erreur lors de l'ouverture du dossier : {e}")
 
     def retirer_jeu_launcher(self, jeu: dict) -> None:
-        """Supprime le raccourci .lnk et ses images sans toucher au jeu installé."""
         reponse = messagebox.askyesno(
             "Retirer du launcher",
             f"Voulez-vous vraiment retirer '{jeu['nom']}' de votre bibliothèque ?\n\n"
@@ -473,7 +529,6 @@ class GameLauncherApp:
             messagebox.showerror("Erreur", f"Impossible de retirer le jeu du launcher :\n{e}")
 
     def supprimer_jeu(self, jeu: dict) -> None:
-        """Supprime définitivement le dossier d'installation du jeu."""
         reponse = messagebox.askyesno(
             "Confirmation de suppression",
             f"Êtes-vous sûr de vouloir supprimer COMPLÈTEMENT le jeu '{jeu['nom']}' ?\n\n"
@@ -489,7 +544,6 @@ class GameLauncherApp:
 
             if fichier_cible and os.path.exists(fichier_cible):
                 dossier_parent = os.path.dirname(fichier_cible)
-                # Sécurité : ne jamais supprimer un chemin trop court (ex: C:\)
                 if len(dossier_parent) > 4 and os.path.exists(dossier_parent):
                     shutil.rmtree(dossier_parent)
                     print(f"Dossier supprimé : {dossier_parent}")
@@ -507,15 +561,8 @@ class GameLauncherApp:
 
     def activer_renommage_inline(self, jeu: dict, btn: tk.Button) -> None:
         entry = tk.Entry(
-            btn,
-            font=("Segoe UI", 10, "bold"),
-            justify="center",
-            bg=BG_ENTRY,
-            fg=COLOR_FG,
-            insertbackground=COLOR_FG,
-            bd=0,
-            highlightthickness=1,
-            highlightcolor=COLOR_ACCENT,
+            btn, font=("Segoe UI", 10, "bold"), justify="center", bg=BG_ENTRY,
+            fg=COLOR_FG, insertbackground=COLOR_FG, bd=0, highlightthickness=1, highlightcolor=COLOR_ACCENT,
         )
         entry.insert(0, jeu["nom"])
         entry.place(relx=0.5, rely=0.88, anchor="center", relwidth=0.9, height=25)
@@ -539,12 +586,10 @@ class GameLauncherApp:
             return
 
         if any(c in CARACTERES_INTERDITS for c in nouveau_nom):
-            messagebox.showerror(
-                "Erreur", 'Le nom contient des caractères interdits (\\ / : * ? " < > |)'
-            )
+            messagebox.showerror("Erreur", 'Le nom contient des caractères interdits (\\ / : * ? " < > |)')
             return
 
-        nouveau_chemin_lnk = os.path.join(DOSSIER_JEUX, f"{nouveau_nom}.lnk")
+        nouveau_chemin_lnk = os.path.join(self.dossier_jeux, f"{nouveau_nom}.lnk")
         if os.path.exists(nouveau_chemin_lnk):
             messagebox.showerror("Erreur", "Un jeu avec ce nom existe déjà dans votre bibliothèque.")
             return
@@ -553,13 +598,13 @@ class GameLauncherApp:
             os.rename(jeu["chemin"], nouveau_chemin_lnk)
 
             for ext in EXTENSIONS_IMAGES:
-                ancien = os.path.join(DOSSIER_IMAGES, f"{jeu['nom']}{ext}")
-                nouveau = os.path.join(DOSSIER_IMAGES, f"{nouveau_nom}{ext}")
+                ancien = os.path.join(self.dossier_images, f"{jeu['nom']}{ext}")
+                nouveau = os.path.join(self.dossier_images, f"{nouveau_nom}{ext}")
                 if os.path.exists(ancien):
                     try:
                         os.rename(ancien, nouveau)
-                    except OSError as img_err:
-                        print(f"Impossible de renommer l'image '{ext}' : {img_err}")
+                    except OSError:
+                        pass
 
             self._rafraichir_bibliotheque()
 
@@ -591,15 +636,8 @@ class GameLauncherApp:
             self.colonnes_actuelles = colonnes
 
             for index, btn in enumerate(self.boutons_jeux):
-                btn.grid(
-                    row=index // colonnes,
-                    column=index % colonnes,
-                    padx=15,
-                    pady=15,
-                    sticky="n",
-                )
+                btn.grid(row=index // colonnes, column=index % colonnes, padx=15, pady=15, sticky="n")
 
-            # Réinitialiser le poids des colonnes
             for i in range(MAX_COLONNES_RESET):
                 self.scrollable_frame.grid_columnconfigure(i, weight=0)
             for i in range(colonnes):
@@ -613,19 +651,17 @@ class GameLauncherApp:
     # ------------------------------------------------------------------
 
     def _supprimer_raccourci_et_images(self, chemin_lnk: str, nom_jeu: str) -> None:
-        """Supprime le fichier .lnk et toutes les images associées au jeu."""
         if os.path.exists(chemin_lnk):
             os.remove(chemin_lnk)
         for ext in EXTENSIONS_IMAGES:
-            chemin_img = os.path.join(DOSSIER_IMAGES, f"{nom_jeu}{ext}")
+            chemin_img = os.path.join(self.dossier_images, f"{nom_jeu}{ext}")
             if os.path.exists(chemin_img):
                 try:
                     os.remove(chemin_img)
-                except OSError as e:
-                    print(f"Impossible de supprimer l'image '{chemin_img}' : {e}")
+                except OSError:
+                    pass
 
     def _rafraichir_bibliotheque(self) -> None:
-        """Recharge les données et redessine la bibliothèque."""
         self.raccourcis_liste.clear()
         self.analyser_dossier_jeux()
         taille = _taille_depuis_etat(self.root.state())
