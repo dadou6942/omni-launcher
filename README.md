@@ -1,85 +1,170 @@
-# Omni Launcher 🚀
+# 🎮 Omni Launcher
 
-**Omni Launcher** est un gestionnaire et lanceur de d'applications léger, développé en Python avec une interface graphique Tkinter. 
-Il permet de centraliser tous vos jeux téléchargés complètement légalement au même endroit sous forme d'une bibliothèque visuelle.
+Un launcher de jeux léger et minimaliste pour Windows, construit en Python avec Tkinter. Omni Launcher scanne un dossier de raccourcis `.lnk`, extrait automatiquement les icônes des exécutables et affiche l'ensemble de votre bibliothèque dans une grille scrollable.
 
----
-
-## 🌟 Fonctionnalités
-
-- **Grille Responsive :** L'interface ajuste automatiquement le nombre de colonnes et la taille des icônes en fonction de la taille de la fenêtre (optimisé pour le mode fenêtré et le plein écran).
-- **Extraction Auto des Icônes :** Le launcher extrait automatiquement l'icône haute résolution directement depuis le fichier `.exe` du jeu.
-- **Édition Inline (Sans Fenêtre) :** Faites un clic droit pour renommer instantanément un jeu directement sur l'interface, sans pop-up intrusive.
-- **Gestion Intelligente de la Bibliothèque :** - *Ouvrir le dossier :* Accès direct aux fichiers du jeu.
-  - *Retirer du launcher :* Supprime le visuel de l'application sans toucher au jeu.
-  - *Supprimer définitivement :* Désinstalle complètement le dossier racine du jeu de votre disque dur (avec confirmation de sécurité).
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
+![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?logo=windows)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
 
-## 📋 Prérequis
+## Table des matières
 
-Le projet étant fourni sous forme de script Python source, vous devez installer Python 3.x sur votre machine ainsi que les dépendances nécessaires.
+- [Principe](#principe)
+- [Fonctionnalités](#fonctionnalités)
+- [Prérequis](#prérequis)
+- [Installation](#installation)
+- [Lancement](#lancement)
+- [Compiler en `.exe`](#compiler-en-exe)
+- [Structure des fichiers](#structure-des-fichiers)
+- [Utilisation](#utilisation)
 
-Ouvrez votre terminal et installez les bibliothèques requises :
+---
+
+## Principe
+
+Omni Launcher repose sur un dossier central contenant des raccourcis Windows (`.lnk`) pointant vers les exécutables de vos jeux. Au démarrage, le launcher :
+
+1. Scanne ce dossier à la recherche de fichiers `.lnk`
+2. Vérifie que chaque cible existe toujours sur le disque (nettoyage automatique des raccourcis cassés)
+3. Extrait automatiquement l'icône de chaque exécutable si aucune image n'est déjà en cache
+4. Affiche tous les jeux dans une grille responsive avec leur icône et leur nom
+
+Le dossier de bibliothèque est configurable depuis l'interface et mémorisé dans un fichier `config.json` placé à côté de l'exécutable. Vous pouvez donc pointer vers un dossier existant contenant déjà vos raccourcis — ils seront importés automatiquement.
+
+---
+
+## Fonctionnalités
+
+- **Grille responsive** — la disposition s'adapte automatiquement à la taille et à l'état (normal/maximisé) de la fenêtre
+- **Extraction automatique d'icônes** — les icônes sont extraites directement depuis les `.exe` au premier lancement, avec gestion des `.ico` multi-frames et des PNG embarqués
+- **Ajout de jeu en un clic** — sélectionnez un `.exe`, le raccourci et l'icône sont créés automatiquement
+- **Lancement robuste** — fallback via `explorer.exe` en processus détaché en cas de refus UAC
+- **Menu contextuel** (clic droit sur un jeu) :
+  - Ouvrir le dossier d'installation
+  - Renommer le jeu (édition inline directement sur la carte)
+  - Retirer du launcher (supprime le raccourci, conserve le jeu)
+  - Supprimer définitivement (supprime le dossier d'installation complet)
+- **Paramètres** — changement du dossier de bibliothèque à la volée, sauvegardé en JSON
+- **Nettoyage automatique** — les raccourcis dont la cible est introuvable sont supprimés au démarrage
+- **Images personnalisées** — placez un `.png` ou `.jpg` du nom du jeu dans le sous-dossier `images/` pour remplacer l'icône extraite
+
+---
+
+## Prérequis
+
+- Windows 10 ou 11
+- Python 3.10 ou supérieur
+- Les dépendances suivantes :
+
+| Package | Usage |
+|---|---|
+| `Pillow` | Chargement et redimensionnement des images |
+| `pywin32` | Création et lecture des raccourcis `.lnk` |
+| `icoextract` | Extraction des icônes depuis les `.exe` |
+
+---
+
+## Installation
+
+### 1. Cloner le dépôt
 
 ```bash
-pip install Pillow pywin32 icoextract pyinstaller
+git clone https://github.com/votre-utilisateur/omni-launcher.git
+cd omni-launcher
+```
+
+### 2. Créer un environnement virtuel (recommandé)
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### 3. Installer les dépendances
+
+```bash
+pip install Pillow pywin32 icoextract
+```
+
+> Si `pywin32` nécessite une étape supplémentaire après installation, exécutez :
+> ```bash
+> python Scripts/pywin32_postinstall.py -install
+> ```
+
+---
+
+## Lancement
+
+```bash
+python omni_launcher.py
+```
+
+Au premier démarrage, un dossier `RACCOURCIS_JEUX/` est créé automatiquement à côté du script. Vous pouvez changer son emplacement depuis **⚙ Paramètres**.
+
+---
+
+## Compiler en `.exe`
+
+Pour distribuer Omni Launcher sans nécessiter Python, utilisez PyInstaller.
+
+### 1. Installer PyInstaller
+
+```bash
+pip install pyinstaller
+```
+
+### 2. Générer l'exécutable
+
+```bash
+pyinstaller --noconfirm --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
+```
+
+L'exécutable se trouvera dans `dist/omni_launcher/omni_launcher.exe`.
+
+> **Pourquoi `--onedir` et pas `--onefile` ?**
+> Le mode `--onefile` extrait les fichiers dans un dossier temporaire `%TEMP%\_MEIxxxxxx` à chaque lancement, ce qui peut provoquer un warning de nettoyage à la fermeture (notamment avec un antivirus actif). Le mode `--onedir` évite entièrement ce comportement.
+
+### 3. Optionnel — fournir une icône
+
+Placez `omni_launcher.ico` à la racine du projet avant de compiler. Si vous n'en avez pas, retirez simplement `--icon=omni_launcher.ico` de la commande.
+
+---
+
+## Structure des fichiers
+
+```
+omni-launcher/
+│
+├── omni_launcher.py          # Script principal
+├── omni_launcher.ico         # Icône de l'application (optionnel)
+├── config.json               # Généré automatiquement, contient le chemin du dossier
+│
+└── RACCOURCIS_JEUX/          # Dossier de bibliothèque (configurable)
+    ├── MonJeu.lnk
+    ├── AutreJeu.lnk
+    └── images/               # Cache des icônes extraites
+        ├── MonJeu.ico
+        └── AutreJeu.ico
+```
+
+Pour utiliser des **images personnalisées** plutôt que les icônes extraites, déposez un fichier `.png` ou `.jpg` portant exactement le même nom que le raccourci dans le dossier `images/` :
+
+```
+images/
+└── MonJeu.png    ← sera utilisé à la place de MonJeu.ico
 ```
 
 ---
 
-## ⚙️ Configuration & Lancement (Depuis les sources)
+## Utilisation
 
-1. **Ajuster le chemin :** Avant de lancer le script, ouvrez `omni_launcher.py` et modifiez la variable `DOSSIER_JEUX` pour pointer vers le dossier où vous souhaitez que le launcher stocke ses raccourcis et ses images :
-   ```python
-   DOSSIER_JEUX = r"D:\Games\RACCOURCIS_JEUX"
-   ```
-2. **Lancer le script :**
-   ```bash
-   python omni_launcher.py
-   ```
-
----
-
-## 📦 Générer l'application (Compilation finale)
-
-Pour une utilisation quotidienne avec un lancement instantané et une stabilité maximale, compilez le projet sous forme de dossier autonome (`--onedir`).
-
-1. Placez votre fichier d'icône personnalisé `omni_launcher.ico` dans le même dossier que le script.
-2. Exécutez la commande de compilation suivante :
-   ```bash
-   pyinstaller --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
-   ```
-3. **Installation sur votre PC :** - Une fois la compilation terminée, récupérez le **dossier complet** nommé `omni_launcher` qui a été généré dans le sous-dossier `dist/`.
-   - Placez ce dossier à l'emplacement définitif de votre choix sur votre ordinateur (par exemple dans `C:\Program Files\` ou `D:\Logiciels\`).
-   - Ouvrez ce dossier, faites un **clic droit** sur `omni_launcher.exe` > **Afficher d'autres options** > **Envoyer vers** > **Bureau (créer un raccourci)**.
-
-*(Astuce : Pour automatiser vos futures mises à jour de code, vous pouvez ajouter l'argument `--distpath="D:\Votre\Chemin\Final"` à la commande de compilation pour écraser directement l'ancienne version de l'application).*
-
----
-
-## 🛠️ Pour les développeurs (.gitignore)
-
-Si vous clonez ce projet ou que vous souhaitez le versionner sur GitHub, il est fortement recommandé de créer un fichier `.gitignore` à la racine pour éviter d'envoyer les fichiers temporaires de compilation en ligne :
-
-```text
-# Environnements virtuels
-venv/
-.venv/
-env/
-
-# Fichiers de compilation PyInstaller
-build/
-dist/
-*.spec
-
-# Caches Python
-__pycache__/
-*.pyc
-
-# Fichiers IDE (PyCharm, VSCode)
-.idea/
-.vscode/
-```
-
----
+| Action | Geste |
+|---|---|
+| Lancer un jeu | Double-clic sur la carte |
+| Ouvrir le menu contextuel | Clic droit sur la carte |
+| Ajouter un jeu | Bouton **+ Ajouter un jeu** |
+| Renommer un jeu | Clic droit → *Renommer le jeu* |
+| Retirer du launcher | Clic droit → *Retirer du launcher* |
+| Supprimer le jeu du disque | Clic droit → *Supprimer définitivement le jeu* |
+| Changer le dossier de bibliothèque | Bouton **⚙ Paramètres** |

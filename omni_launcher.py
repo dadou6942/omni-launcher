@@ -1,4 +1,4 @@
-# COMMANDE DE GENERATION DE .EXE : pyinstaller --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
+# COMMANDE DE GENERATION DE .EXE : pyinstaller --noconfirm --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
 
 import io
 import os
