@@ -3,4 +3,4 @@ __pycache__/
 *.exe
 *.spec
 dist/
-build/
+build/ 
