@@ -1,6 +1,6 @@
 # 🎮 Omni Launcher
 
-Un launcher visuel de fichiers `.exe` téléchargés totalement légalement, construit en Python.
+Un launcher visuel de fichiers `.exe` (qui doivent _évidemment_ être téléchargés totalement légalement, construit en Python.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?logo=windows)
