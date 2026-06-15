@@ -4,4 +4,4 @@ __pycache__/
 *.spec
 .venv/
 dist/
-build/
+build/ 
