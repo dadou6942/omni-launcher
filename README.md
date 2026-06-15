@@ -65,6 +65,8 @@ Le dossier de bibliothèque est configurable depuis l'interface. Vous pouvez don
 
 ## Installation
 
+Pour utiliser l'application, téléchargez simplement la dernière release ou compilez vous même la version actuelle en suivant ces étapes : 
+
 ### 1. Cloner le dépôt
 
 ```bash
