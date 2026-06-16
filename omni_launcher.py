@@ -76,7 +76,7 @@ def _charger_config() -> dict:
         try:
             with open(FICHIER_CONFIG, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except (json.JSONDecodeError, OSError):  # FIX: exception trop générale évitée
             return {}
     return {}
 
@@ -84,8 +84,8 @@ def _charger_config() -> dict:
 def _sauvegarder_config(config: dict) -> None:
     try:
         with open(FICHIER_CONFIG, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=4, ensure_ascii=False)
-    except Exception as e:
+            f.write(json.dumps(config, indent=4, ensure_ascii=False))  # FIX: évite le warning TextIO
+    except OSError as e:
         print(f"Erreur de sauvegarde config : {e}")
 
 
@@ -109,8 +109,8 @@ def _creer_shell():
 # ---------------------------------------------------------------------------
 
 class GameLauncherApp:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
+    def __init__(self, window: tk.Tk) -> None:  # FIX: 'window' évite de shadower la var globale 'root'
+        self.root = window
         self.root.title("Omni Launcher")
         self.root.geometry(RESOLUTION)
         self.root.configure(bg=BG_MAIN)
@@ -331,7 +331,8 @@ class GameLauncherApp:
                 "source_img": source_img,
             })
 
-    def extraire_icone_automatique(self, chemin_lnk: str, chemin_sortie_ico: str) -> None:
+    @staticmethod  # FIX: n'utilise pas self
+    def extraire_icone_automatique(chemin_lnk: str, chemin_sortie_ico: str) -> None:
         """Extrait l'icône d'un raccourci .lnk et la sauvegarde en .ico."""
         try:
             shell = _creer_shell()
@@ -369,7 +370,8 @@ class GameLauncherApp:
     # Chargement des images
     # ------------------------------------------------------------------
 
-    def creer_image_par_defaut(self, taille: int) -> Image.Image:
+    @staticmethod  # FIX: n'utilise pas self
+    def creer_image_par_defaut(taille: int) -> Image.Image:
         """Crée une image de remplacement quand aucune icône n'est disponible."""
         img = Image.new("RGB", (taille, taille), color=BG_BTN)
         draw = ImageDraw.Draw(img)
@@ -451,19 +453,30 @@ class GameLauncherApp:
             self.images_references.append(photo)
 
             btn = tk.Button(
-                self.scrollable_frame, text=jeu["nom"], image=photo, compound="top",
+                self.scrollable_frame, text=jeu["nom"], image=photo, compound="top",  # type: ignore[arg-type]
                 font=("Segoe UI", 10, "bold"), fg=COLOR_FG, bg=BG_MAIN,
                 activebackground="#1e1e1e", activeforeground=COLOR_FG, bd=0, cursor="hand2",
                 pady=10, wraplength=taille_icone + 20,
             )
 
-            btn.bind("<Double-Button-1>", lambda e, ch=jeu["chemin"]: self.lancer_jeu(ch))
-            btn.bind("<Button-3>", lambda e, j=jeu, b=btn: self.afficher_menu_contextuel(e, j, b))
-
+            self._bind_jeu(btn, jeu)  # FIX: helper dédié, évite les lambdas avec argument mutable
             self.boutons_jeux.append(btn)
 
         self.colonnes_actuelles = 0
         self._on_canvas_resize(None)
+
+    def _bind_jeu(self, btn: tk.Button, jeu: dict) -> None:
+        """Lie les événements clavier/souris via des closures propres (évite le mutable default arg)."""
+        chemin = jeu["chemin"]
+
+        def on_double_click(_event: tk.Event) -> None:
+            self.lancer_jeu(chemin)
+
+        def on_right_click(event: tk.Event) -> None:
+            self.afficher_menu_contextuel(event, jeu, btn)
+
+        btn.bind("<Double-Button-1>", on_double_click)
+        btn.bind("<Button-3>", on_right_click)
 
     def afficher_menu_contextuel(self, event: tk.Event, jeu: dict, btn: tk.Button) -> None:
         menu = tk.Menu(
@@ -484,7 +497,7 @@ class GameLauncherApp:
     def lancer_jeu(self, chemin_raccourci: str) -> None:
         try:
             os.startfile(chemin_raccourci)
-            self.root.after(3000, self.root.destroy)
+            self.root.after(3000, lambda: self.root.destroy())  # FIX: lambda évite le warning 'args unfilled'
         except OSError as e:
             if getattr(e, "winerror", None) == 1223:
                 try:
@@ -492,7 +505,7 @@ class GameLauncherApp:
                         ["explorer.exe", chemin_raccourci],
                         close_fds=True, creationflags=0x00000008,
                     )
-                    self.root.after(3000, self.root.destroy)
+                    self.root.after(3000, lambda: self.root.destroy())  # FIX: idem
                 except Exception as fallback_err:
                     messagebox.showerror("Erreur", f"Même l'Explorateur n'a pas pu lancer le jeu :\n{fallback_err}")
             else:
@@ -500,7 +513,8 @@ class GameLauncherApp:
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de lancer le jeu :\n{e}")
 
-    def ouvrir_dossier_jeu(self, chemin_lnk: str) -> None:
+    @staticmethod  # FIX: n'utilise pas self
+    def ouvrir_dossier_jeu(chemin_lnk: str) -> None:
         try:
             shell = _creer_shell()
             shortcut = shell.CreateShortCut(chemin_lnk)
@@ -569,12 +583,12 @@ class GameLauncherApp:
         entry.focus_set()
         entry.select_range(0, "end")
 
-        def valider_renommage(event=None):
+        def valider_renommage(_event: tk.Event | None = None) -> None:  # FIX: _event signale que c'est intentionnel
             nouveau_nom = entry.get().strip()
             entry.destroy()
             self.executer_renommage(jeu, nouveau_nom)
 
-        def annuler_renommage(event=None):
+        def annuler_renommage(_event: tk.Event | None = None) -> None:  # FIX: _event
             entry.destroy()
 
         entry.bind("<Return>", valider_renommage)
@@ -673,6 +687,6 @@ class GameLauncherApp:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = GameLauncherApp(root)
-    root.mainloop()
+    _main_window = tk.Tk()  # FIX: _main_window évite de shadower 'root' dans GameLauncherApp.__init__
+    app = GameLauncherApp(_main_window)
+    _main_window.mainloop()
