@@ -129,11 +129,17 @@ class GameLauncherApp:
         os.makedirs(self.dossier_jeux, exist_ok=True)
         os.makedirs(self.dossier_images, exist_ok=True)
 
-        self.boutons_jeux: list[tk.Button] = []
+        self.widgets_favoris: list[tk.Frame] = []
+        self.widgets_normaux: list[tk.Frame] = []
+
         self.images_references: list[ImageTk.PhotoImage] = []
         self.raccourcis_liste: list[dict] = []
         self.colonnes_actuelles: int = 0
         self.est_maximise_precedent: bool = False
+
+        self.lbl_favoris = None
+        self.lbl_no_favoris = None
+        self.lbl_separator = None
 
         # --- Création des deux "Vues" principales (Panneaux) ---
         self.frame_bibliotheque = tk.Frame(self.root, bg=BG_MAIN)
@@ -153,7 +159,6 @@ class GameLauncherApp:
     # ------------------------------------------------------------------
 
     def _construire_vue_bibliotheque(self) -> None:
-        """Crée l'interface de la bibliothèque de jeux."""
         # En-tête
         header_frame = tk.Frame(self.frame_bibliotheque, bg=BG_MAIN)
         header_frame.pack(fill="x", padx=30, pady=20)
@@ -162,7 +167,7 @@ class GameLauncherApp:
             header_frame, text="Bibliothèque", font=("Segoe UI", 24, "bold"), fg=COLOR_FG, bg=BG_MAIN
         ).pack(side="left")
 
-        # Bouton Paramètres (qui change la vue)
+        # Bouton Paramètres
         tk.Button(
             header_frame, text="⚙ Paramètres", font=("Segoe UI", 12, "bold"), fg=COLOR_FG, bg=BG_MENU,
             activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=0, cursor="hand2", padx=15, pady=8,
@@ -196,8 +201,6 @@ class GameLauncherApp:
     # ------------------------------------------------------------------
 
     def _construire_vue_parametres(self) -> None:
-        """Crée l'interface des paramètres."""
-        # En-tête des paramètres avec le bouton de retour
         header_param = tk.Frame(self.frame_parametres, bg=BG_MAIN)
         header_param.pack(fill="x", padx=30, pady=20)
 
@@ -207,7 +210,6 @@ class GameLauncherApp:
             command=self.afficher_vue_bibliotheque
         ).pack(side="left")
 
-        # Contenu centré des paramètres
         content_param = tk.Frame(self.frame_parametres, bg=BG_MAIN)
         content_param.pack(expand=True)
 
@@ -220,7 +222,6 @@ class GameLauncherApp:
             bg=BG_MAIN
         ).pack()
 
-        # On garde une référence à ce label pour pouvoir le mettre à jour
         self.lbl_chemin_dossier = tk.Label(
             content_param, text=self.dossier_jeux, font=("Segoe UI", 12, "bold"), fg=COLOR_ACCENT, bg=BG_MAIN,
             wraplength=800
@@ -234,7 +235,6 @@ class GameLauncherApp:
         ).pack()
 
     def changer_dossier_jeux(self):
-        """Ouvre l'explorateur pour choisir un nouveau dossier de jeux."""
         nouveau_dossier = filedialog.askdirectory(
             title="Sélectionnez le dossier de vos raccourcis",
             initialdir=self.dossier_jeux
@@ -246,20 +246,16 @@ class GameLauncherApp:
             os.makedirs(self.dossier_jeux, exist_ok=True)
             os.makedirs(self.dossier_images, exist_ok=True)
 
-            # Sauvegarde du choix
             self.config["dossier_jeux"] = self.dossier_jeux
             _sauvegarder_config(self.config)
 
-            # Met à jour le texte affiché
             self.lbl_chemin_dossier.config(text=self.dossier_jeux)
 
-            # Recharge les jeux en arrière-plan
             self._rafraichir_bibliotheque()
             messagebox.showinfo("Succès",
                                 "Le dossier de la bibliothèque a été modifié.\n\nLes jeux existants dans ce dossier ont été automatiquement importés !",
                                 parent=self.root)
 
-    # --- Fonctions de navigation entre les vues ---
     def afficher_vue_parametres(self):
         self.frame_bibliotheque.pack_forget()
         self.frame_parametres.pack(fill="both", expand=True)
@@ -267,7 +263,6 @@ class GameLauncherApp:
     def afficher_vue_bibliotheque(self):
         self.frame_parametres.pack_forget()
         self.frame_bibliotheque.pack(fill="both", expand=True)
-        # Force un redimensionnement du canvas pour éviter les bugs d'affichage au retour
         self._on_canvas_resize(None)
 
     # ------------------------------------------------------------------
@@ -297,7 +292,6 @@ class GameLauncherApp:
             messagebox.showerror("Erreur", f"Erreur lors de la création du raccourci :\n{e}")
 
     def analyser_dossier_jeux(self) -> None:
-        """Scanne le dossier dynamique, nettoie et importe automatiquement les .lnk."""
         os.makedirs(self.dossier_jeux, exist_ok=True)
         shell = _creer_shell()
         raccourcis = [f for f in os.listdir(self.dossier_jeux) if f.lower().endswith(".lnk")]
@@ -332,7 +326,6 @@ class GameLauncherApp:
             })
 
     def extraire_icone_automatique(self, chemin_lnk: str, chemin_sortie_ico: str) -> None:
-        """Extrait l'icône d'un raccourci .lnk et la sauvegarde en .ico."""
         try:
             shell = _creer_shell()
             shortcut = shell.CreateShortCut(chemin_lnk)
@@ -370,14 +363,12 @@ class GameLauncherApp:
     # ------------------------------------------------------------------
 
     def creer_image_par_defaut(self, taille: int) -> Image.Image:
-        """Crée une image de remplacement quand aucune icône n'est disponible."""
         img = Image.new("RGB", (taille, taille), color=BG_BTN)
         draw = ImageDraw.Draw(img)
         draw.rectangle([(0, 0), (taille - 1, taille - 1)], outline=COLOR_BORDER, width=2)
         return img
 
     def charger_image_securise(self, chemin_image: str, taille_icone: int) -> Image.Image:
-        """Charge une image de façon robuste avec fallbacks pour les .ico corrompus."""
         try:
             img_pil = Image.open(chemin_image)
 
@@ -418,19 +409,21 @@ class GameLauncherApp:
             return self.creer_image_par_defaut(taille_icone)
 
     # ------------------------------------------------------------------
-    # Affichage de la bibliothèque
+    # Affichage de la bibliothèque (AVEC FAVORIS PERMANENTS)
     # ------------------------------------------------------------------
 
     def redessiner_bibliotheque(self, taille_icone: int) -> None:
-        """Détruit et recrée tous les boutons de jeux."""
-        for btn in self.boutons_jeux:
-            btn.destroy()
-        self.boutons_jeux.clear()
+        """Détruit et recrée tous les widgets de jeux avec la séparation des favoris."""
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        self.widgets_favoris.clear()
+        self.widgets_normaux.clear()
         self.images_references.clear()
 
-        for widget in self.scrollable_frame.winfo_children():
-            if isinstance(widget, tk.Label):
-                widget.destroy()
+        self.lbl_favoris = None
+        self.lbl_no_favoris = None
+        self.lbl_separator = None
 
         if not self.raccourcis_liste:
             tk.Label(
@@ -440,7 +433,13 @@ class GameLauncherApp:
             ).pack()
             return
 
-        for jeu in self.raccourcis_liste:
+        favoris_noms = self.config.get("favoris", [])
+        jeux_favoris = [j for j in self.raccourcis_liste if j["nom"] in favoris_noms]
+        jeux_normaux = [j for j in self.raccourcis_liste if j["nom"] not in favoris_noms]
+
+        def creer_widget_jeu(jeu, est_favori):
+            container = tk.Frame(self.scrollable_frame, bg=BG_MAIN)
+
             if jeu["source_img"]:
                 img_pil = self.charger_image_securise(jeu["source_img"], taille_icone)
             else:
@@ -451,16 +450,44 @@ class GameLauncherApp:
             self.images_references.append(photo)
 
             btn = tk.Button(
-                self.scrollable_frame, text=jeu["nom"], image=photo, compound="top",
+                container, text=jeu["nom"], image=photo, compound="top",
                 font=("Segoe UI", 10, "bold"), fg=COLOR_FG, bg=BG_MAIN,
                 activebackground="#1e1e1e", activeforeground=COLOR_FG, bd=0, cursor="hand2",
                 pady=10, wraplength=taille_icone + 20,
             )
+            btn.pack(fill="both", expand=True)
 
             btn.bind("<Double-Button-1>", lambda e, ch=jeu["chemin"]: self.lancer_jeu(ch))
             btn.bind("<Button-3>", lambda e, j=jeu, b=btn: self.afficher_menu_contextuel(e, j, b))
 
-            self.boutons_jeux.append(btn)
+            return container
+
+        # --- SECTION FAVORIS ---
+        # Le titre "Vos Favoris" est désormais affiché en permanence
+        self.lbl_favoris = tk.Label(
+             self.scrollable_frame, text="Vos Favoris ⭐", font=("Segoe UI", 14, "bold"),
+            fg=COLOR_FG, bg=BG_MAIN, anchor="w"
+        )
+
+        if jeux_favoris:
+            for jeu in jeux_favoris:
+                self.widgets_favoris.append(creer_widget_jeu(jeu, True))
+        else:
+            # Si aucun favori, on affiche un texte explicatif
+            self.lbl_no_favoris = tk.Label(
+                self.scrollable_frame,
+                text="Aucun jeu favori pour le moment.\nFaites un clic droit sur un jeu ➔ Ajouter aux favoris",
+                font=("Segoe UI", 11, "italic"), fg=COLOR_FG_MUTED, bg=BG_MAIN, justify="left"
+            )
+
+        # --- SECTION AUTRES JEUX ---
+        if jeux_normaux:
+            self.lbl_separator = tk.Label(
+                self.scrollable_frame, text="Autres Jeux", font=("Segoe UI", 14, "bold"),
+                fg=COLOR_FG, bg=BG_MAIN, anchor="w"
+            )
+            for jeu in jeux_normaux:
+                self.widgets_normaux.append(creer_widget_jeu(jeu, False))
 
         self.colonnes_actuelles = 0
         self._on_canvas_resize(None)
@@ -471,6 +498,13 @@ class GameLauncherApp:
             activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=1,
         )
         menu.add_command(label="Ouvrir le dossier du jeu", command=lambda: self.ouvrir_dossier_jeu(jeu["chemin"]))
+        menu.add_separator()
+
+        favoris = self.config.get("favoris", [])
+        if jeu["nom"] in favoris:
+            menu.add_command(label="Retirer des favoris", command=lambda: self.toggle_favori(jeu["nom"]))
+        else:
+            menu.add_command(label="Ajouter aux favoris", command=lambda: self.toggle_favori(jeu["nom"]))
 
         menu.add_separator()
         menu.add_command(label="Renommer le jeu", command=lambda: self.activer_renommage_inline(jeu, btn))
@@ -528,6 +562,12 @@ class GameLauncherApp:
             return
 
         try:
+            favoris = self.config.get("favoris", [])
+            if jeu["nom"] in favoris:
+                favoris.remove(jeu["nom"])
+                self.config["favoris"] = favoris
+                _sauvegarder_config(self.config)
+
             self._supprimer_raccourci_et_images(jeu["chemin"], jeu["nom"])
             self._rafraichir_bibliotheque()
         except Exception as e:
@@ -553,6 +593,12 @@ class GameLauncherApp:
                     shutil.rmtree(dossier_parent)
                     print(f"Dossier supprimé : {dossier_parent}")
 
+            favoris = self.config.get("favoris", [])
+            if jeu["nom"] in favoris:
+                favoris.remove(jeu["nom"])
+                self.config["favoris"] = favoris
+                _sauvegarder_config(self.config)
+
             self._supprimer_raccourci_et_images(jeu["chemin"], jeu["nom"])
             self._rafraichir_bibliotheque()
             messagebox.showinfo("Succès", f"Le jeu '{jeu['nom']}' a été supprimé avec succès.")
@@ -561,8 +607,20 @@ class GameLauncherApp:
             messagebox.showerror("Erreur", f"Impossible de supprimer complètement le jeu :\n{e}")
 
     # ------------------------------------------------------------------
-    # Personnalisation (Renommage & Icônes)
+    # Personnalisation (Renommage, Icônes & Favoris)
     # ------------------------------------------------------------------
+
+    def toggle_favori(self, nom_jeu: str) -> None:
+        favoris = self.config.get("favoris", [])
+
+        if nom_jeu in favoris:
+            favoris.remove(nom_jeu)
+        else:
+            favoris.append(nom_jeu)
+
+        self.config["favoris"] = favoris
+        _sauvegarder_config(self.config)
+        self.redessiner_bibliotheque(_taille_depuis_etat(self.root.state()))
 
     def activer_renommage_inline(self, jeu: dict, btn: tk.Button) -> None:
         entry = tk.Entry(
@@ -611,13 +669,19 @@ class GameLauncherApp:
                     except OSError:
                         pass
 
+            favoris = self.config.get("favoris", [])
+            if jeu["nom"] in favoris:
+                favoris.remove(jeu["nom"])
+                favoris.append(nouveau_nom)
+                self.config["favoris"] = favoris
+                _sauvegarder_config(self.config)
+
             self._rafraichir_bibliotheque()
 
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de renommer le jeu :\n{e}")
 
     def changer_icone_manuellement(self, jeu: dict) -> None:
-        """Permet à l'utilisateur de sélectionner une image locale pour la jaquette."""
         fichier_img = filedialog.askopenfilename(
             title=f"Sélectionnez la nouvelle icône pour {jeu['nom']}",
             filetypes=[("Images supportées", "*.png *.jpg *.jpeg *.ico"), ("Tous les fichiers", "*.*")]
@@ -626,50 +690,42 @@ class GameLauncherApp:
             return
 
         try:
-            # 1. On efface les images existantes en cache pour éviter les conflits
             for ext in EXTENSIONS_IMAGES:
                 chemin_ancien = os.path.join(self.dossier_images, f"{jeu['nom']}{ext}")
                 if os.path.exists(chemin_ancien):
                     os.remove(chemin_ancien)
 
-            # 2. On récupère la bonne extension pour la nouvelle image
             ext_nouvelle = os.path.splitext(fichier_img)[1].lower()
             if ext_nouvelle == ".jpeg":
-                ext_nouvelle = ".jpg"  # Uniformisation
+                ext_nouvelle = ".jpg"
 
             if ext_nouvelle not in EXTENSIONS_IMAGES:
                 messagebox.showerror("Erreur",
                                      f"Format {ext_nouvelle} non supporté.\nMerci d'utiliser un PNG, JPG ou ICO.")
                 return
 
-            # 3. On copie la nouvelle image avec le nom du jeu dans le dossier de cache
             chemin_nouveau = os.path.join(self.dossier_images, f"{jeu['nom']}{ext_nouvelle}")
             shutil.copy(fichier_img, chemin_nouveau)
 
-            # 4. On rafraîchit l'interface pour appliquer la nouvelle image
             self._rafraichir_bibliotheque()
 
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de modifier l'icône :\n{e}")
 
     def retablir_icone_defaut(self, jeu: dict) -> None:
-        """Supprime l'image custom pour forcer le programme à ré-extraire l'icône du .exe"""
         try:
-            # On supprime simplement l'image personnalisée de notre cache
             for ext in EXTENSIONS_IMAGES:
                 chemin_ancien = os.path.join(self.dossier_images, f"{jeu['nom']}{ext}")
                 if os.path.exists(chemin_ancien):
                     os.remove(chemin_ancien)
 
-            # Au rafraîchissement, le programme verra qu'il n'y a plus d'image valide,
-            # et il relancera automatiquement son extraction classique !
             self._rafraichir_bibliotheque()
 
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de rétablir l'icône :\n{e}")
 
     # ------------------------------------------------------------------
-    # Gestion du redimensionnement
+    # Gestion du redimensionnement (Avec disposition des Favoris)
     # ------------------------------------------------------------------
 
     def _on_canvas_resize(self, event) -> None:
@@ -689,12 +745,41 @@ class GameLauncherApp:
         taille_icone = _taille_depuis_etat(self.root.state())
         colonnes = max(1, largeur_canvas // (taille_icone + 40))
 
-        if colonnes != self.colonnes_actuelles and self.boutons_jeux:
+        if colonnes != self.colonnes_actuelles and self.raccourcis_liste:
             self.colonnes_actuelles = colonnes
 
-            for index, btn in enumerate(self.boutons_jeux):
-                btn.grid(row=index // colonnes, column=index % colonnes, padx=15, pady=15, sticky="n")
+            current_row = 0
 
+            # 1. Disposition des Favoris
+            if self.lbl_favoris:
+                self.lbl_favoris.grid(row=current_row, column=0, columnspan=colonnes, pady=(5, 10), padx=20, sticky="w")
+                current_row += 1
+
+            if self.widgets_favoris:
+                for index, w in enumerate(self.widgets_favoris):
+                    row = current_row + (index // colonnes)
+                    col = index % colonnes
+                    w.grid(row=row, column=col, padx=15, pady=15, sticky="n")
+
+                current_row += (len(self.widgets_favoris) - 1) // colonnes + 1
+            elif self.lbl_no_favoris:
+                self.lbl_no_favoris.grid(row=current_row, column=0, columnspan=colonnes, pady=(0, 20), padx=40,
+                                         sticky="w")
+                current_row += 1
+
+            # 2. Disposition du reste des jeux
+            if self.widgets_normaux:
+                if self.lbl_separator:
+                    self.lbl_separator.grid(row=current_row, column=0, columnspan=colonnes, pady=(30, 10), padx=20,
+                                            sticky="w")
+                    current_row += 1
+
+                for index, w in enumerate(self.widgets_normaux):
+                    row = current_row + (index // colonnes)
+                    col = index % colonnes
+                    w.grid(row=row, column=col, padx=15, pady=15, sticky="n")
+
+            # 3. Réinitialisation des poids des colonnes
             for i in range(MAX_COLONNES_RESET):
                 self.scrollable_frame.grid_columnconfigure(i, weight=0)
             for i in range(colonnes):
