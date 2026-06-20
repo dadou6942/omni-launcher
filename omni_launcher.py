@@ -1,4 +1,4 @@
-# COMMANDE DE GENERATION DE .EXE : pyinstaller --noconfirm --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
+# COMMANDE DE GENERATION DE .EXE : pyinstaller --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
 
 import io
 import os
@@ -76,7 +76,7 @@ def _charger_config() -> dict:
         try:
             with open(FICHIER_CONFIG, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError):  # FIX: exception trop générale évitée
+        except Exception:
             return {}
     return {}
 
@@ -84,8 +84,8 @@ def _charger_config() -> dict:
 def _sauvegarder_config(config: dict) -> None:
     try:
         with open(FICHIER_CONFIG, "w", encoding="utf-8") as f:
-            f.write(json.dumps(config, indent=4, ensure_ascii=False))  # FIX: évite le warning TextIO
-    except OSError as e:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+    except Exception as e:
         print(f"Erreur de sauvegarde config : {e}")
 
 
@@ -109,8 +109,8 @@ def _creer_shell():
 # ---------------------------------------------------------------------------
 
 class GameLauncherApp:
-    def __init__(self, window: tk.Tk) -> None:  # FIX: 'window' évite de shadower la var globale 'root'
-        self.root = window
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
         self.root.title("Omni Launcher")
         self.root.geometry(RESOLUTION)
         self.root.configure(bg=BG_MAIN)
@@ -331,8 +331,7 @@ class GameLauncherApp:
                 "source_img": source_img,
             })
 
-    @staticmethod  # FIX: n'utilise pas self
-    def extraire_icone_automatique(chemin_lnk: str, chemin_sortie_ico: str) -> None:
+    def extraire_icone_automatique(self, chemin_lnk: str, chemin_sortie_ico: str) -> None:
         """Extrait l'icône d'un raccourci .lnk et la sauvegarde en .ico."""
         try:
             shell = _creer_shell()
@@ -370,8 +369,7 @@ class GameLauncherApp:
     # Chargement des images
     # ------------------------------------------------------------------
 
-    @staticmethod  # FIX: n'utilise pas self
-    def creer_image_par_defaut(taille: int) -> Image.Image:
+    def creer_image_par_defaut(self, taille: int) -> Image.Image:
         """Crée une image de remplacement quand aucune icône n'est disponible."""
         img = Image.new("RGB", (taille, taille), color=BG_BTN)
         draw = ImageDraw.Draw(img)
@@ -453,30 +451,19 @@ class GameLauncherApp:
             self.images_references.append(photo)
 
             btn = tk.Button(
-                self.scrollable_frame, text=jeu["nom"], image=photo, compound="top",  # type: ignore[arg-type]
+                self.scrollable_frame, text=jeu["nom"], image=photo, compound="top",
                 font=("Segoe UI", 10, "bold"), fg=COLOR_FG, bg=BG_MAIN,
                 activebackground="#1e1e1e", activeforeground=COLOR_FG, bd=0, cursor="hand2",
                 pady=10, wraplength=taille_icone + 20,
             )
 
-            self._bind_jeu(btn, jeu)  # FIX: helper dédié, évite les lambdas avec argument mutable
+            btn.bind("<Double-Button-1>", lambda e, ch=jeu["chemin"]: self.lancer_jeu(ch))
+            btn.bind("<Button-3>", lambda e, j=jeu, b=btn: self.afficher_menu_contextuel(e, j, b))
+
             self.boutons_jeux.append(btn)
 
         self.colonnes_actuelles = 0
         self._on_canvas_resize(None)
-
-    def _bind_jeu(self, btn: tk.Button, jeu: dict) -> None:
-        """Lie les événements clavier/souris via des closures propres (évite le mutable default arg)."""
-        chemin = jeu["chemin"]
-
-        def on_double_click(_event: tk.Event) -> None:
-            self.lancer_jeu(chemin)
-
-        def on_right_click(event: tk.Event) -> None:
-            self.afficher_menu_contextuel(event, jeu, btn)
-
-        btn.bind("<Double-Button-1>", on_double_click)
-        btn.bind("<Button-3>", on_right_click)
 
     def afficher_menu_contextuel(self, event: tk.Event, jeu: dict, btn: tk.Button) -> None:
         menu = tk.Menu(
@@ -484,9 +471,14 @@ class GameLauncherApp:
             activebackground=BG_BTN_HOVER, activeforeground=COLOR_FG, bd=1,
         )
         menu.add_command(label="Ouvrir le dossier du jeu", command=lambda: self.ouvrir_dossier_jeu(jeu["chemin"]))
-        menu.add_command(label="Renommer le jeu", command=lambda: self.activer_renommage_inline(jeu, btn))
-        menu.add_command(label="Retirer du launcher", command=lambda: self.retirer_jeu_launcher(jeu))
+
         menu.add_separator()
+        menu.add_command(label="Renommer le jeu", command=lambda: self.activer_renommage_inline(jeu, btn))
+        menu.add_command(label="Modifier l'icône...", command=lambda: self.changer_icone_manuellement(jeu))
+        menu.add_command(label="Rétablir l'icône par défaut", command=lambda: self.retablir_icone_defaut(jeu))
+
+        menu.add_separator()
+        menu.add_command(label="Retirer du launcher", command=lambda: self.retirer_jeu_launcher(jeu))
         menu.add_command(label="Supprimer définitivement le jeu", command=lambda: self.supprimer_jeu(jeu))
         menu.post(event.x_root, event.y_root)
 
@@ -497,7 +489,7 @@ class GameLauncherApp:
     def lancer_jeu(self, chemin_raccourci: str) -> None:
         try:
             os.startfile(chemin_raccourci)
-            self.root.after(3000, lambda: self.root.destroy())  # FIX: lambda évite le warning 'args unfilled'
+            self.root.after(3000, self.root.destroy)
         except OSError as e:
             if getattr(e, "winerror", None) == 1223:
                 try:
@@ -505,7 +497,7 @@ class GameLauncherApp:
                         ["explorer.exe", chemin_raccourci],
                         close_fds=True, creationflags=0x00000008,
                     )
-                    self.root.after(3000, lambda: self.root.destroy())  # FIX: idem
+                    self.root.after(3000, self.root.destroy)
                 except Exception as fallback_err:
                     messagebox.showerror("Erreur", f"Même l'Explorateur n'a pas pu lancer le jeu :\n{fallback_err}")
             else:
@@ -513,8 +505,7 @@ class GameLauncherApp:
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de lancer le jeu :\n{e}")
 
-    @staticmethod  # FIX: n'utilise pas self
-    def ouvrir_dossier_jeu(chemin_lnk: str) -> None:
+    def ouvrir_dossier_jeu(self, chemin_lnk: str) -> None:
         try:
             shell = _creer_shell()
             shortcut = shell.CreateShortCut(chemin_lnk)
@@ -570,7 +561,7 @@ class GameLauncherApp:
             messagebox.showerror("Erreur", f"Impossible de supprimer complètement le jeu :\n{e}")
 
     # ------------------------------------------------------------------
-    # Renommage inline
+    # Personnalisation (Renommage & Icônes)
     # ------------------------------------------------------------------
 
     def activer_renommage_inline(self, jeu: dict, btn: tk.Button) -> None:
@@ -583,12 +574,12 @@ class GameLauncherApp:
         entry.focus_set()
         entry.select_range(0, "end")
 
-        def valider_renommage(_event: tk.Event | None = None) -> None:  # FIX: _event signale que c'est intentionnel
+        def valider_renommage(event=None):
             nouveau_nom = entry.get().strip()
             entry.destroy()
             self.executer_renommage(jeu, nouveau_nom)
 
-        def annuler_renommage(_event: tk.Event | None = None) -> None:  # FIX: _event
+        def annuler_renommage(event=None):
             entry.destroy()
 
         entry.bind("<Return>", valider_renommage)
@@ -624,6 +615,58 @@ class GameLauncherApp:
 
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de renommer le jeu :\n{e}")
+
+    def changer_icone_manuellement(self, jeu: dict) -> None:
+        """Permet à l'utilisateur de sélectionner une image locale pour la jaquette."""
+        fichier_img = filedialog.askopenfilename(
+            title=f"Sélectionnez la nouvelle icône pour {jeu['nom']}",
+            filetypes=[("Images supportées", "*.png *.jpg *.jpeg *.ico"), ("Tous les fichiers", "*.*")]
+        )
+        if not fichier_img:
+            return
+
+        try:
+            # 1. On efface les images existantes en cache pour éviter les conflits
+            for ext in EXTENSIONS_IMAGES:
+                chemin_ancien = os.path.join(self.dossier_images, f"{jeu['nom']}{ext}")
+                if os.path.exists(chemin_ancien):
+                    os.remove(chemin_ancien)
+
+            # 2. On récupère la bonne extension pour la nouvelle image
+            ext_nouvelle = os.path.splitext(fichier_img)[1].lower()
+            if ext_nouvelle == ".jpeg":
+                ext_nouvelle = ".jpg"  # Uniformisation
+
+            if ext_nouvelle not in EXTENSIONS_IMAGES:
+                messagebox.showerror("Erreur",
+                                     f"Format {ext_nouvelle} non supporté.\nMerci d'utiliser un PNG, JPG ou ICO.")
+                return
+
+            # 3. On copie la nouvelle image avec le nom du jeu dans le dossier de cache
+            chemin_nouveau = os.path.join(self.dossier_images, f"{jeu['nom']}{ext_nouvelle}")
+            shutil.copy(fichier_img, chemin_nouveau)
+
+            # 4. On rafraîchit l'interface pour appliquer la nouvelle image
+            self._rafraichir_bibliotheque()
+
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible de modifier l'icône :\n{e}")
+
+    def retablir_icone_defaut(self, jeu: dict) -> None:
+        """Supprime l'image custom pour forcer le programme à ré-extraire l'icône du .exe"""
+        try:
+            # On supprime simplement l'image personnalisée de notre cache
+            for ext in EXTENSIONS_IMAGES:
+                chemin_ancien = os.path.join(self.dossier_images, f"{jeu['nom']}{ext}")
+                if os.path.exists(chemin_ancien):
+                    os.remove(chemin_ancien)
+
+            # Au rafraîchissement, le programme verra qu'il n'y a plus d'image valide,
+            # et il relancera automatiquement son extraction classique !
+            self._rafraichir_bibliotheque()
+
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible de rétablir l'icône :\n{e}")
 
     # ------------------------------------------------------------------
     # Gestion du redimensionnement
@@ -687,6 +730,6 @@ class GameLauncherApp:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    _main_window = tk.Tk()  # FIX: _main_window évite de shadower 'root' dans GameLauncherApp.__init__
-    app = GameLauncherApp(_main_window)
-    _main_window.mainloop()
+    root = tk.Tk()
+    app = GameLauncherApp(root)
+    root.mainloop()
