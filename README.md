@@ -1,152 +1,70 @@
 # 🎮 Omni Launcher
 
-Un launcher visuel de fichiers `.exe` (qui doivent _évidemment_ être téléchargés totalement légalement), construit en Python.
+Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment_ en toute légalité) dans une grille d'icônes, à un double-clic de distance.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
-![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?logo=windows)
+La version 2 est une réécriture complète en **Rust** avec [egui](https://github.com/emilk/egui) : un seul exécutable autonome, sans Python ni dépendance à installer, qui démarre quasi instantanément.
+
+![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
+![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-lightgrey?logo=windows)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 
 ---
 
 ## Table des matières
 
-- [Principe](#principe)
 - [Fonctionnalités](#fonctionnalités)
-- [Prérequis](#prérequis)
 - [Installation](#installation)
-- [Lancement](#lancement)
-- [Compiler en `.exe`](#compiler-en-exe)
-- [Structure des fichiers](#structure-des-fichiers)
+- [Compiler depuis les sources](#compiler-depuis-les-sources)
 - [Utilisation](#utilisation)
-
----
-
-## Principe
-
-Omni Launcher repose sur un dossier central contenant des raccourcis Windows (`.lnk`) pointant vers les exécutables de vos jeux. Au démarrage, le launcher :
-
-1. Scanne ce dossier à la recherche de fichiers `.lnk`
-2. Vérifie que chaque cible existe toujours sur le disque (nettoyage automatique des raccourcis cassés)
-3. Extrait automatiquement l'icône de chaque exécutable si aucune image n'est pas déjà en cache
-4. Affiche tous les jeux dans une grille avec leur icône et leur nom
-
-Le dossier de bibliothèque est configurable depuis l'interface. Vous pouvez donc pointer vers un dossier existant contenant déjà vos raccourcis — ils seront importés automatiquement.
+- [Données](#données)
+- [Structure du projet](#structure-du-projet)
+- [Nouveautés de la v2](#nouveautés-de-la-v2)
+- [Tests](#tests)
 
 ---
 
 ## Fonctionnalités
 
-- **Grille responsive** — la disposition s'adapte automatiquement à la taille et à l'état (normal/maximisé) de la fenêtre
-- **Extraction automatique d'icônes** — les icônes sont extraites directement depuis les `.exe`
-- **Ajout de jeu en un clic** — sélectionnez un `.exe`, le raccourci et l'icône sont créés automatiquement
-- **Menu contextuel** (clic droit sur un jeu) :
-  - Ouvrir le dossier d'installation
-  - Renommer le jeu
-  - Retirer du launcher (supprime le raccourci, conserve le jeu)
-  - Supprimer définitivement (supprime le dossier d'installation complet)
-- **Paramètres** — changement du dossier de bibliothèque à la volée
-- **Nettoyage automatique** — les raccourcis dont la cible est introuvable sont supprimés au démarrage
-- **Images personnalisées** — placez un `.png` ou `.jpg` du nom du jeu dans le sous-dossier `images/` pour remplacer l'icône extraite
-
----
-
-## Prérequis
-
-- Windows 10 ou 11
-- Python 3.10 ou supérieur
-- Les dépendances suivantes :
-
-| Package | Usage |
-|---|---|
-| `Pillow` | Chargement et redimensionnement des images |
-| `pywin32` | Création et lecture des raccourcis `.lnk` |
-| `icoextract` | Extraction des icônes depuis les `.exe` |
+- **Scan de dossier** : parcourt un dossier de jeux (un sous-dossier par jeu) et propose les exécutables trouvés. Le plus probable est pré-coché ; désinstalleurs, redistribuables et outils de rapport de plantage sont écartés automatiquement.
+- **Bibliothèques Steam reconnues** : le scan descend directement dans `steamapps\common`.
+- **Re-scan** : ajoute en un clic les jeux installés depuis le dernier scan.
+- **Glisser-déposer** de `.exe` ou d'un dossier de jeux directement dans la fenêtre.
+- **Icônes extraites nativement** des exécutables (API Windows, 256 px), mises en cache et chargées en arrière-plan.
+- **Favoris**, affichés en tête de la bibliothèque.
+- **Recherche instantanée** et **tri** par nom, dernier lancement ou date d'ajout.
+- **Thème sombre** et **taille des tuiles réglable**.
+- **Menu contextuel** (clic droit) : favori, renommer, icône personnalisée, arguments de lancement, ouvrir l'emplacement, retirer, supprimer du disque.
+- **Jeux introuvables signalés**, avec choix de les relocaliser ou de les retirer.
+- **Suppression sécurisée** : le dossier du jeu part à la corbeille (récupérable), avec des garde-fous.
+- **Option « fermer après lancement »**, et mémorisation de la taille et de la position de la fenêtre.
+- **Mode portable** : toutes les données restent à côté de l'exécutable.
 
 ---
 
 ## Installation
 
-Pour utiliser l'application, téléchargez simplement la dernière release ou compilez vous même la version actuelle en suivant ces étapes : 
+Téléchargez `omni_launcher.exe` depuis la page [Releases](https://github.com/dadou6942/omni-launcher/releases) et lancez-le. Aucune installation n'est nécessaire : l'exécutable est autonome et peut être placé n'importe où (clé USB comprise).
 
-### 1. Cloner le dépôt
+---
 
-```bash
+## Compiler depuis les sources
+
+### Prérequis
+
+- [Rust](https://rustup.rs) installé avec `rustup` (édition 2024, donc Rust 1.85 ou plus récent)
+- Les [Build Tools de Visual Studio](https://visualstudio.microsoft.com/fr/visual-cpp-build-tools/) avec le composant **« Développement Desktop en C++ »**
+
+### Compilation
+
+```powershell
 git clone https://github.com/dadou6942/omni-launcher.git
 cd omni-launcher
+cargo build --release
 ```
 
-### 2. Créer un environnement virtuel (recommandé)
+L'exécutable se trouve dans `target\release\omni_launcher.exe`.
 
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. Installer les dépendances
-
-```bash
-pip install Pillow pywin32 icoextract
-```
-
-> Si `pywin32` nécessite une étape supplémentaire après installation, exécutez :
-> ```bash
-> python Scripts/pywin32_postinstall.py -install
-> ```
-
----
-
-## Lancement
-
-```bash
-python omni_launcher.py
-```
-
-Au premier démarrage, un dossier `RACCOURCIS_JEUX/` est créé automatiquement à côté du script. Vous pouvez changer son emplacement depuis **⚙ Paramètres**.
-
----
-
-## Compiler en `.exe`
-
-Pour distribuer Omni Launcher sans nécessiter Python, utilisez PyInstaller.
-
-### 1. Installer PyInstaller
-
-```bash
-pip install pyinstaller
-```
-
-### 2. Générer l'exécutable
-
-```bash
-pyinstaller --noconfirm --clean --noconsole --onedir --icon=omni_launcher.ico omni_launcher.py
-```
-
-L'exécutable se trouvera dans `dist/omni_launcher/omni_launcher.exe`.
-
----
-
-## Structure des fichiers
-
-```
-omni-launcher/
-│
-├── omni_launcher.py          # Script principal
-├── omni_launcher.ico         # Icône de l'application
-├── config.json               # Généré automatiquement, contient le chemin du dossier
-│
-└── RACCOURCIS_JEUX/          # Dossier de bibliothèque (configurable)
-    ├── MonJeu.lnk
-    ├── AutreJeu.lnk
-    └── images/               # Cache des icônes extraites
-        ├── MonJeu.ico
-        └── AutreJeu.ico
-```
-
-Pour utiliser des **images personnalisées** plutôt que les icônes extraites, déposez un fichier `.png` ou `.jpg` portant exactement le même nom que le raccourci dans le dossier `images/` :
-
-```
-images/
-└── MonJeu.png    ← sera utilisé à la place de MonJeu.ico
-```
+Le fichier `omni_launcher.ico` à la racine du projet est automatiquement intégré à l'exécutable (icône dans l'Explorateur) et à la fenêtre. Sans lui, la compilation fonctionne quand même.
 
 ---
 
@@ -154,10 +72,79 @@ images/
 
 | Action | Geste |
 |---|---|
-| Lancer un jeu | Double-clic sur le jeu |
-| Ouvrir le menu contextuel | Clic droit sur le jeu |
-| Ajouter un jeu | Bouton **Ajouter un jeu** |
-| Renommer un jeu | Clic droit → *Renommer le jeu* |
-| Retirer du launcher | Clic droit → *Retirer du launcher* |
-| Supprimer le jeu du disque | Clic droit → *Supprimer définitivement le jeu* |
-| Changer le dossier de bibliothèque | Bouton **Paramètres** |
+| Lancer un jeu | Double-clic sur sa tuile |
+| Ouvrir le menu d'un jeu | Clic droit sur sa tuile |
+| Ajouter un jeu | Bouton **+ Ajouter un jeu**, ou glisser-déposer un `.exe` |
+| Importer un dossier de jeux | **Scanner un dossier**, ou glisser-déposer le dossier |
+| Ajouter les jeux installés depuis | **Paramètres** → **Re-scanner** |
+| Rechercher | `Ctrl+F` |
+| Lancer le premier résultat | `Entrée` dans la recherche |
+| Effacer la recherche | `Échap` |
+| Changer l'icône d'un jeu | Clic droit → *Modifier l'icône…* |
+| Retirer un jeu (sans toucher au disque) | Clic droit → *Retirer du launcher* |
+| Supprimer un jeu du disque | Clic droit → *Supprimer le jeu du disque* |
+
+### Garde-fous de suppression
+
+« Supprimer le jeu du disque » envoie le dossier du jeu à la corbeille. La suppression est refusée s'il s'agit d'un dossier racine, du dossier utilisateur, de `Program Files`, du dossier scanné lui-même ou d'un dossier partagé par plusieurs jeux.
+
+---
+
+## Données
+
+Tout est rangé dans `donnees\` à côté de l'exécutable (mode portable), ou dans `%APPDATA%\OmniLauncher` si ce dossier n'est pas accessible en écriture :
+
+```
+donnees/
+├── config.json       # Bibliothèque et réglages (écrit de façon atomique)
+├── icones/           # Icônes personnalisées
+└── cache_icones/     # Icônes extraites des exécutables, en PNG
+```
+
+Le dossier est accessible depuis **Paramètres** → **Données** → **Ouvrir le dossier**.
+
+---
+
+## Structure du projet
+
+```
+omni-launcher/
+├── Cargo.toml
+├── build.rs              # Intègre omni_launcher.ico à l'exécutable
+├── omni_launcher.ico     # Icône de l'application
+└── src/
+    ├── main.rs           # Point d'entrée, fenêtre
+    ├── app.rs            # Interface : grille, menus, dialogues, paramètres
+    ├── config.rs         # Configuration JSON persistante
+    ├── scan.rs           # Scan de dossiers et détection de l'exe principal
+    ├── icons.rs          # Extraction, cache et chargement des icônes
+    ├── platform.rs       # Appels Windows (lancement, icônes, corbeille)
+    └── theme.rs          # Thème visuel
+```
+
+---
+
+## Nouveautés de la v2
+
+La v1 (Python / Tkinter) reste disponible via le tag [`v1.1.0`](https://github.com/dadou6942/omni-launcher/tree/v1.1.0).
+
+| v1 · Python / Tkinter | v2 · Rust / egui |
+|---|---|
+| Python et trois paquets à installer | Un seul `.exe` autonome |
+| Un raccourci `.lnk` par jeu, relu via COM à chaque démarrage | Un seul `config.json`, écrit de façon atomique |
+| Icônes ré-extraites et redimensionnées à chaque rafraîchissement | Extraites une fois, mises en cache, chargées en arrière-plan |
+| Toute la grille détruite et recréée à chaque action | Rendu immédiat : seules les tuiles visibles sont dessinées |
+| Ajout des jeux un par un | Scan de dossier et bibliothèques Steam |
+| Raccourci supprimé automatiquement si le jeu est introuvable | Jeu affiché « Introuvable », à relocaliser ou retirer |
+| Suppression définitive du dossier | Envoi à la corbeille, avec garde-fous |
+| Renommage = renommer des fichiers sur disque | Renommage = simple changement de nom dans la config |
+
+---
+
+## Tests
+
+```powershell
+cargo test
+```
+
+Les tests couvrent la configuration (aller-retour JSON, fichier corrompu), le scan (filtrage, choix de l'exe principal, bibliothèque Steam) et le traitement des icônes.

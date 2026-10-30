@@ -1,9 +1,2 @@
-__pycache__/
-*.pyc
-*.exe
-*.spec
-.idea/
-.venv/
-dist/
-build/ 
-config.json
+/target
+/donnees
