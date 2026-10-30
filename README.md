@@ -1,9 +1,8 @@
 # 🎮 Omni Launcher
 
-Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment_ en toute légalité) dans une grille d'icônes, à un double-clic de distance.
+Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment_ en toute légalité) dans une grille d'icônes
 
-La version 2 est une réécriture complète en **Rust** avec [egui](https://github.com/emilk/egui) : un seul exécutable autonome, sans Python ni dépendance à installer, qui démarre quasi instantanément.
-
+La version 2 est une réécriture complète en **Rust** avec [egui](https://github.com/emilk/egui) : un seul exécutable autonome, sans Python ni dépendance à installer
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-lightgrey?logo=windows)
 ![Version](https://img.shields.io/badge/version-2.0.0-blue)
