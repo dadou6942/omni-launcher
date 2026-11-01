@@ -24,7 +24,7 @@ pub fn mettre_a_la_corbeille(chemin: &Path) -> Result<(), String> {
 mod imp {
     use super::ImageRgba;
     use std::os::windows::process::CommandExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use windows::Win32::Graphics::Gdi::{
         BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
         DeleteObject, GetDIBits, GetObjectW, HBITMAP, HDC,
@@ -185,6 +185,71 @@ mod imp {
         };
         (lignes as u32 == h).then_some(pixels)
     }
+
+    /// (PID, chemin complet) des processus en cours d'exécution, hors celui-ci.
+    /// Les processus protégés (système, anti-triche…) sont simplement ignorés.
+    pub fn processus_actifs() -> Vec<(u32, PathBuf)> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        };
+
+        let moi = std::process::id();
+        let mut chemins = Vec::new();
+        let Ok(instantane) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+            return chemins;
+        };
+        let mut entree = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if unsafe { Process32FirstW(instantane, &mut entree) }.is_ok() {
+            loop {
+                let pid = entree.th32ProcessID;
+                if pid != 0
+                    && pid != moi
+                    && let Some(c) = chemin_processus(pid)
+                {
+                    chemins.push((pid, c));
+                }
+                if unsafe { Process32NextW(instantane, &mut entree) }.is_err() {
+                    break;
+                }
+            }
+        }
+        unsafe {
+            let _ = CloseHandle(instantane);
+        }
+        chemins
+    }
+
+    fn chemin_processus(pid: u32) -> Option<PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        };
+        use windows::core::PWSTR;
+
+        let processus = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        let mut tampon = [0u16; 1024];
+        let mut taille = tampon.len() as u32;
+        let ok = unsafe {
+            QueryFullProcessImageNameW(
+                processus,
+                PROCESS_NAME_WIN32,
+                PWSTR(tampon.as_mut_ptr()),
+                &mut taille,
+            )
+        }
+        .is_ok();
+        unsafe {
+            let _ = CloseHandle(processus);
+        }
+        ok.then(|| PathBuf::from(std::ffi::OsString::from_wide(&tampon[..taille as usize])))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +285,37 @@ mod imp {
     pub fn extraire_icone(_exe: &Path, _taille: u32) -> Option<ImageRgba> {
         None
     }
+
+    /// Sous Linux, via `/proc` ; ailleurs, liste vide.
+    pub fn processus_actifs() -> Vec<(u32, std::path::PathBuf)> {
+        let moi = std::process::id();
+        let Ok(entrees) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entrees
+            .flatten()
+            .filter_map(|e| {
+                let pid: u32 = e.file_name().to_string_lossy().parse().ok()?;
+                (pid != moi).then_some(())?;
+                Some((pid, std::fs::read_link(e.path().join("exe")).ok()?))
+            })
+            .collect()
+    }
 }
 
-pub use imp::{extraire_icone, lancer, ouvrir_dans_explorateur, ouvrir_dossier};
+pub use imp::{extraire_icone, lancer, ouvrir_dans_explorateur, ouvrir_dossier, processus_actifs};
+
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    fn processus_actifs_contient_cargo() {
+        let liste = super::processus_actifs();
+        assert!(liste.iter().all(|(_, p)| p.is_absolute()));
+        assert!(
+            liste.iter().any(|(_, p)| p
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("cargo.exe"))),
+            "cargo.exe devrait être visible pendant les tests"
+        );
+    }
+}

@@ -4,8 +4,12 @@
 mod app;
 mod config;
 mod icons;
+mod manette;
+mod partie;
 mod platform;
+mod sauvegarde;
 mod scan;
+mod stats;
 mod theme;
 
 use eframe::egui;
@@ -32,7 +36,7 @@ fn main() -> eframe::Result<()> {
         "Omni Launcher",
         options,
         Box::new(|cc| {
-            theme::appliquer(&cc.egui_ctx);
+            theme::initialiser(&cc.egui_ctx);
             Ok(Box::new(app::App::nouveau(&cc.egui_ctx)))
         }),
     )

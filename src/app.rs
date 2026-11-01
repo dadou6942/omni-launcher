@@ -1,12 +1,22 @@
-//! Interface principale : bibliothèque, recherche, scan, paramètres.
+//! Interface principale : bibliothèque, recherche, scan, dialogues.
+//! Les vues Paramètres, Statistiques et le mode plein écran sont dans les
+//! sous-modules.
+
+mod parametres;
+mod statistiques;
+mod tv;
 
 use crate::config::{
     Config, Dossiers, Jeu, TAILLE_TUILE_MAX, TAILLE_TUILE_MIN, Tri, cle_chemin, maintenant,
 };
 use crate::icons::{self, ChargeurIcones};
-use crate::platform;
+use crate::manette::{self, Commande, MsgManette};
+use crate::partie::{self, MsgPartie};
+use crate::sauvegarde::{self, InfoSauvegarde};
 use crate::scan::{self, Candidat};
-use crate::theme::{self, ACCENT, BG_BTN, BG_TUILE_HOVER, BORDURE, DANGER, FG, FG_MUTED};
+use crate::stats;
+use crate::theme;
+use crate::platform;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Key, RichText, Sense, Stroke, Vec2,
 };
@@ -18,6 +28,9 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 const DUREE_NOTIF: Duration = Duration::from_secs(4);
+/// Délai entre le lancement d'un jeu et la réduction du launcher, le temps
+/// de lire la notification.
+const DELAI_REDUCTION: Duration = Duration::from_millis(1200);
 
 /// Action différée exécutée après la fermeture d'une boîte de dialogue.
 type ActionDialogue = Box<dyn FnOnce(&mut App, &egui::Context)>;
@@ -26,6 +39,7 @@ type ActionDialogue = Box<dyn FnOnce(&mut App, &egui::Context)>;
 enum Vue {
     Bibliotheque,
     Parametres,
+    Statistiques,
 }
 
 enum Action {
@@ -37,6 +51,7 @@ enum Action {
     RetablirIcone(u64),
     OuvrirEmplacement(u64),
     EditerArguments(u64),
+    EditerTags(u64),
     DemanderRetrait(u64),
     DemanderSuppression(u64),
 }
@@ -48,6 +63,11 @@ enum Dialogue {
     Introuvable(u64),
     RetirerIntrouvables,
     Arguments { id: u64, texte: String },
+    Tags { id: u64, saisie: String },
+    RenommerTag { ancien: String, texte: String },
+    SupprimerTag(String),
+    Restaurer(InfoSauvegarde),
+    Importer { config: Box<Config>, fichier: String },
 }
 
 enum MsgScan {
@@ -83,6 +103,15 @@ struct Notification {
     depuis: Instant,
 }
 
+/// Jeu lancé dont on mesure le temps de jeu.
+struct PartieEnCours {
+    id: u64,
+    nom: String,
+    /// Horodatage de détection du jeu, une fois qu'il tourne.
+    debut: Option<u64>,
+    reception: Receiver<MsgPartie>,
+}
+
 pub struct App {
     dossiers: Dossiers,
     config: Config,
@@ -90,6 +119,7 @@ pub struct App {
     vue: Vue,
     recherche: String,
     focus_recherche: bool,
+    filtre_tag: Option<String>,
     renommage: Option<Renommage>,
     dialogue: Option<Dialogue>,
     scan: Option<ScanEnCours>,
@@ -97,13 +127,28 @@ pub struct App {
     manquants: HashSet<u64>,
     notification: Option<Notification>,
     suppressions: Vec<Receiver<Result<String, String>>>,
-    fermer_a: Option<Instant>,
+    parties: Vec<PartieEnCours>,
+    reduire_a: Option<Instant>,
+    /// Une modification attend la fin d'un glisser pour être enregistrée.
+    sauvegarde_differee: bool,
+    sauvegardes: Vec<InfoSauvegarde>,
+    manette: Receiver<MsgManette>,
+    manette_connectee: Option<String>,
+    commandes: Vec<Commande>,
+    mode_tv: bool,
+    tv: tv::EtatTv,
 }
 
 impl App {
     pub fn nouveau(ctx: &egui::Context) -> Self {
         let dossiers = Dossiers::detecter();
         let config = Config::charger(&dossiers.config);
+        theme::appliquer(ctx, config.theme, config.accent_perso);
+        // Copie de la configuration telle qu'elle était au premier lancement du jour.
+        let _ = sauvegarde::sauvegarde_du_jour(&dossiers);
+        // La taille de fenêtre mémorisée ne doit pas rouvrir en plein écran.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+
         let icones = ChargeurIcones::nouveau(ctx, &dossiers);
         let mut app = Self {
             dossiers,
@@ -112,6 +157,7 @@ impl App {
             vue: Vue::Bibliotheque,
             recherche: String::new(),
             focus_recherche: false,
+            filtre_tag: None,
             renommage: None,
             dialogue: None,
             scan: None,
@@ -119,7 +165,15 @@ impl App {
             manquants: HashSet::new(),
             notification: None,
             suppressions: Vec::new(),
-            fermer_a: None,
+            parties: Vec::new(),
+            reduire_a: None,
+            sauvegarde_differee: false,
+            sauvegardes: Vec::new(),
+            manette: manette::demarrer(ctx.clone()),
+            manette_connectee: None,
+            commandes: Vec::new(),
+            mode_tv: false,
+            tv: tv::EtatTv::default(),
         };
         app.verifier_manquants();
         app
@@ -130,6 +184,7 @@ impl App {
     // ------------------------------------------------------------------
 
     fn sauver(&mut self) {
+        self.sauvegarde_differee = false;
         if let Err(e) = self.config.sauvegarder(&self.dossiers.config) {
             self.notifier_erreur(format!("Impossible d'enregistrer la configuration : {e}"));
         }
@@ -165,11 +220,14 @@ impl App {
         self.config.jeux.iter().find(|j| j.id == id)
     }
 
-    /// Identifiants des jeux visibles, filtrés et triés, séparés en
-    /// (favoris, autres).
-    fn listes_visibles(&self) -> (Vec<u64>, Vec<u64>) {
-        let termes: Vec<String> = self
-            .recherche
+    fn appliquer_theme(&self, ctx: &egui::Context) {
+        theme::appliquer(ctx, self.config.theme, self.config.accent_perso);
+    }
+
+    /// Jeux filtrés (recherche sur le nom et les tags, filtre de tag) et triés,
+    /// séparés en (favoris, autres).
+    fn trier_filtrer(&self, recherche: &str, tag: Option<&str>) -> (Vec<u64>, Vec<u64>) {
+        let termes: Vec<String> = recherche
             .split_whitespace()
             .map(|t| t.to_lowercase())
             .collect();
@@ -178,9 +236,13 @@ impl App {
             .config
             .jeux
             .iter()
+            .filter(|j| tag.is_none_or(|t| j.a_tag(t)))
             .filter(|j| {
                 let nom = j.nom.to_lowercase();
-                termes.iter().all(|t| nom.contains(t.as_str()))
+                termes.iter().all(|t| {
+                    nom.contains(t.as_str())
+                        || j.tags.iter().any(|g| g.to_lowercase().contains(t.as_str()))
+                })
             })
             .collect();
 
@@ -194,6 +256,11 @@ impl App {
             Tri::DateAjout => {
                 jeux.sort_by(|a, b| b.ajoute_le.cmp(&a.ajoute_le).then(b.id.cmp(&a.id)))
             }
+            Tri::TempsDeJeu => jeux.sort_by(|a, b| {
+                b.temps_jeu
+                    .cmp(&a.temps_jeu)
+                    .then_with(|| a.nom.to_lowercase().cmp(&b.nom.to_lowercase()))
+            }),
         }
 
         let (fav, autres): (Vec<&Jeu>, Vec<&Jeu>) = jeux.into_iter().partition(|j| j.favori);
@@ -201,6 +268,10 @@ impl App {
             fav.iter().map(|j| j.id).collect(),
             autres.iter().map(|j| j.id).collect(),
         )
+    }
+
+    fn listes_visibles(&self) -> (Vec<u64>, Vec<u64>) {
+        self.trier_filtrer(&self.recherche, self.filtre_tag.as_deref())
     }
 
     // ------------------------------------------------------------------
@@ -416,6 +487,12 @@ impl App {
                     });
                 }
             }
+            Action::EditerTags(id) => {
+                self.dialogue = Some(Dialogue::Tags {
+                    id,
+                    saisie: String::new(),
+                });
+            }
             Action::DemanderRetrait(id) => self.dialogue = Some(Dialogue::Retirer(id)),
             Action::DemanderSuppression(id) => {
                 let Some(jeu) = self.jeu(id) else { return };
@@ -436,19 +513,110 @@ impl App {
             self.dialogue = Some(Dialogue::Introuvable(id));
             return;
         }
+        let suivi_existant = self.parties.iter().any(|p| p.id == id);
+        let mut cible = partie::Cible::nouvelle(&jeu.exe, jeu.dossier_jeu().as_deref());
+        if !suivi_existant {
+            cible.ignorer_existants(&platform::processus_actifs());
+        }
         match platform::lancer(&jeu.exe, &jeu.arguments) {
             Ok(()) => {
                 if let Some(j) = self.config.jeu_mut(id) {
                     j.dernier_lancement = Some(maintenant());
+                    j.nb_lancements += 1;
                 }
                 self.sauver();
                 self.notifier(format!("Lancement de « {} »…", jeu.nom));
-                if self.config.fermer_apres_lancement {
-                    self.fermer_a = Some(Instant::now() + Duration::from_millis(1200));
-                    ctx.request_repaint_after(Duration::from_millis(1200));
+
+                if !suivi_existant {
+                    self.parties.push(PartieEnCours {
+                        id,
+                        nom: jeu.nom.clone(),
+                        debut: None,
+                        reception: partie::surveiller(cible, ctx.clone()),
+                    });
                 }
+                // Le launcher s'efface pendant la partie et revient à la fin.
+                self.reduire_a = Some(Instant::now() + DELAI_REDUCTION);
+                ctx.request_repaint_after(DELAI_REDUCTION);
             }
             Err(e) => self.notifier_erreur(format!("Impossible de lancer « {} » : {e}", jeu.nom)),
+        }
+    }
+
+    /// Relève les messages des parties en cours. Appelé même quand la
+    /// fenêtre est réduite (voir [`eframe::App::logic`]).
+    fn suivre_parties(&mut self, ctx: &egui::Context) {
+        if self.parties.is_empty() {
+            return;
+        }
+        let mut terminees = Vec::new();
+        let mut messages = Vec::new();
+        for (i, p) in self.parties.iter_mut().enumerate() {
+            while let Ok(m) = p.reception.try_recv() {
+                match m {
+                    MsgPartie::Debut(t) => p.debut = Some(t),
+                    MsgPartie::Fin { debut, fin } => {
+                        terminees.push(i);
+                        messages.push((p.id, p.nom.clone(), Some((debut, fin))));
+                    }
+                    MsgPartie::NonDetectee => {
+                        terminees.push(i);
+                        messages.push((p.id, p.nom.clone(), None));
+                    }
+                }
+            }
+        }
+        if terminees.is_empty() {
+            return;
+        }
+        for i in terminees.into_iter().rev() {
+            self.parties.remove(i);
+        }
+
+        for (id, nom, mesure) in messages {
+            match mesure {
+                Some((debut, fin)) => {
+                    let duree = fin.saturating_sub(debut);
+                    if let Some(j) = self.config.jeu_mut(id) {
+                        j.ajouter_session(debut, duree);
+                    }
+                    self.sauver();
+                    self.notifier(format!(
+                        "Partie de « {nom} » terminée : {}.",
+                        stats::duree(duree)
+                    ));
+                }
+                None => self.notifier(format!(
+                    "Le temps de jeu de « {nom} » n'a pas pu être mesuré (jeu non détecté)."
+                )),
+            }
+        }
+
+        if self.parties.is_empty() {
+            self.reduire_a = None;
+            if self.config.fermer_apres_lancement {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
+    }
+
+    /// Enregistre le temps des parties encore en cours (fermeture du launcher).
+    fn enregistrer_parties_en_cours(&mut self) {
+        let fin = maintenant();
+        let mut modifie = false;
+        for p in std::mem::take(&mut self.parties) {
+            if let Some(debut) = p.debut
+                && let Some(j) = self.config.jeu_mut(p.id)
+            {
+                j.ajouter_session(debut, fin.saturating_sub(debut));
+                modifie = true;
+            }
+        }
+        if modifie {
+            let _ = self.config.sauvegarder(&self.dossiers.config);
         }
     }
 
@@ -607,13 +775,120 @@ impl App {
     }
 
     // ------------------------------------------------------------------
-    // Interface
+    // Sauvegardes
     // ------------------------------------------------------------------
 
+    fn rafraichir_sauvegardes(&mut self) {
+        self.sauvegardes = sauvegarde::lister(&self.dossiers.sauvegardes);
+    }
+
+    /// Remplace toute la configuration (restauration ou import).
+    fn remplacer_config(&mut self, mut nouvelle: Config, ctx: &egui::Context) {
+        if let Err(e) = sauvegarde::sauvegarde_immediate(&self.dossiers, "avant-remplacement") {
+            self.notifier_erreur(format!(
+                "Copie de sécurité impossible, opération annulée : {e}"
+            ));
+            return;
+        }
+        // Les icônes personnalisées absentes de ce PC sont oubliées.
+        for j in &mut nouvelle.jeux {
+            if j
+                .icone_perso
+                .as_ref()
+                .is_some_and(|n| !self.dossiers.icones.join(n).is_file())
+            {
+                j.icone_perso = None;
+            }
+        }
+        self.config = nouvelle;
+        self.filtre_tag = None;
+        self.renommage = None;
+        self.icones.tout_invalider();
+        self.verifier_manquants();
+        self.appliquer_theme(ctx);
+        self.sauver();
+        self.rafraichir_sauvegardes();
+    }
+
+    fn exporter(&mut self) {
+        let nom = format!(
+            "omni_launcher_{}.json",
+            chrono::Local::now().format("%Y-%m-%d")
+        );
+        let Some(chemin) = rfd::FileDialog::new()
+            .set_title("Exporter la bibliothèque")
+            .set_file_name(nom)
+            .add_filter("Configuration Omni Launcher", &["json"])
+            .save_file()
+        else {
+            return;
+        };
+        match sauvegarde::exporter(&self.config, &chemin) {
+            Ok(()) => self.notifier(format!(
+                "Bibliothèque exportée ({} jeux).",
+                self.config.jeux.len()
+            )),
+            Err(e) => self.notifier_erreur(format!("Export impossible : {e}")),
+        }
+    }
+
+    fn choisir_import(&mut self) {
+        let Some(chemin) = rfd::FileDialog::new()
+            .set_title("Importer une bibliothèque")
+            .add_filter("Configuration Omni Launcher", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        match sauvegarde::lire(&chemin) {
+            Ok(config) => {
+                self.dialogue = Some(Dialogue::Importer {
+                    config: Box::new(config),
+                    fichier: chemin
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                });
+            }
+            Err(e) => self.notifier_erreur(e),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Manette et clavier
+    // ------------------------------------------------------------------
+
+    /// Relève la manette. Les commandes reçues pendant que le launcher n'a
+    /// pas le focus (en pleine partie, par exemple) sont ignorées.
+    fn suivre_manette(&mut self, ctx: &egui::Context) {
+        let actif = ctx.input(|i| {
+            let v = i.viewport();
+            v.focused != Some(false) && v.minimized != Some(true)
+        });
+        while let Ok(m) = self.manette.try_recv() {
+            match m {
+                MsgManette::Connectee(nom) => self.manette_connectee = Some(nom),
+                MsgManette::Deconnectee => self.manette_connectee = None,
+                MsgManette::Commande(c) if actif => self.commandes.push(c),
+                MsgManette::Commande(_) => {}
+            }
+        }
+    }
+
+    fn basculer_mode_tv(&mut self, ctx: &egui::Context) {
+        self.mode_tv = !self.mode_tv;
+        self.renommage = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.mode_tv));
+        if self.mode_tv {
+            self.tv.entrer();
+        }
+    }
+
     fn raccourcis_clavier(&mut self, ctx: &egui::Context) {
-        let (ctrl_f, deposes) = ctx.input(|i| {
+        let (ctrl_f, f11, deposes) = ctx.input(|i| {
             (
                 i.modifiers.command && i.key_pressed(Key::F),
+                i.key_pressed(Key::F11),
                 i.raw
                     .dropped_files
                     .iter()
@@ -622,7 +897,10 @@ impl App {
                     .collect::<Vec<_>>(),
             )
         });
-        if ctrl_f {
+        if f11 {
+            self.commandes.push(Commande::BasculerPleinEcran);
+        }
+        if ctrl_f && !self.mode_tv {
             self.vue = Vue::Bibliotheque;
             self.focus_recherche = true;
         }
@@ -642,8 +920,23 @@ impl App {
         }
     }
 
+    fn traiter_commandes(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        for c in std::mem::take(&mut self.commandes) {
+            if c == Commande::BasculerPleinEcran {
+                self.basculer_mode_tv(ctx);
+            } else if self.mode_tv {
+                self.commande_tv(c, ctx, actions);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Interface
+    // ------------------------------------------------------------------
+
     fn entete(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let ctx = ui.ctx().clone();
+        let p = theme::p();
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
@@ -651,10 +944,11 @@ impl App {
                 Vue::Bibliotheque => {
                     ui.heading("Bibliothèque");
                     ui.label(
-                        RichText::new(format!("{} jeux", self.config.jeux.len())).color(FG_MUTED),
+                        RichText::new(format!("{} jeux", self.config.jeux.len()))
+                            .color(p.fg_muted),
                     );
                 }
-                Vue::Parametres => {
+                Vue::Parametres | Vue::Statistiques => {
                     if ui.button("⬅  Retour à la bibliothèque").clicked() {
                         self.vue = Vue::Bibliotheque;
                     }
@@ -665,7 +959,22 @@ impl App {
                 ui.add_space(14.0);
                 if self.vue == Vue::Bibliotheque {
                     if ui.button("⚙  Paramètres").clicked() {
+                        self.rafraichir_sauvegardes();
                         self.vue = Vue::Parametres;
+                    }
+                    if ui
+                        .button("📊")
+                        .on_hover_text("Statistiques de jeu")
+                        .clicked()
+                    {
+                        self.vue = Vue::Statistiques;
+                    }
+                    if ui
+                        .button("🎮")
+                        .on_hover_text("Mode plein écran à la manette (F11 ou bouton Start)")
+                        .clicked()
+                    {
+                        self.commandes.push(Commande::BasculerPleinEcran);
                     }
                     let scan_btn = ui.add_enabled(
                         self.scan.is_none(),
@@ -680,9 +989,9 @@ impl App {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("+  Ajouter un jeu").color(Color32::BLACK),
+                                RichText::new("+  Ajouter un jeu").color(p.sur_accent()),
                             )
-                            .fill(ACCENT),
+                            .fill(p.accent),
                         )
                         .clicked()
                     {
@@ -695,6 +1004,7 @@ impl App {
                             Tri::Nom => "Tri : nom",
                             Tri::DernierLancement => "Tri : récents",
                             Tri::DateAjout => "Tri : ajout",
+                            Tri::TempsDeJeu => "Tri : temps de jeu",
                         })
                         .show_ui(ui, |ui| {
                             let avant = self.config.tri;
@@ -708,6 +1018,11 @@ impl App {
                                 &mut self.config.tri,
                                 Tri::DateAjout,
                                 "Ajoutés récemment",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.tri,
+                                Tri::TempsDeJeu,
+                                "Les plus joués",
                             );
                             if avant != self.config.tri {
                                 self.sauver();
@@ -744,23 +1059,56 @@ impl App {
         ui.add_space(10.0);
     }
 
+    /// Rangée de filtres par tag, sous l'en-tête.
+    fn filtres_tags(&mut self, ui: &mut egui::Ui) {
+        let tags = self.config.tags();
+        if tags.is_empty() {
+            self.filtre_tag = None;
+            return;
+        }
+        if self
+            .filtre_tag
+            .as_ref()
+            .is_some_and(|f| !tags.iter().any(|(t, _)| t.eq_ignore_ascii_case(f)))
+        {
+            self.filtre_tag = None;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            if puce(ui, "Tous", self.filtre_tag.is_none()).clicked() {
+                self.filtre_tag = None;
+            }
+            for (tag, n) in tags {
+                let actif = self
+                    .filtre_tag
+                    .as_ref()
+                    .is_some_and(|f| f.eq_ignore_ascii_case(&tag));
+                if puce(ui, &format!("{tag}  {n}"), actif).clicked() {
+                    self.filtre_tag = if actif { None } else { Some(tag) };
+                }
+            }
+        });
+        ui.add_space(12.0);
+    }
+
     fn bibliotheque(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let ctx = ui.ctx().clone();
+        let p = theme::p();
         if self.config.jeux.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.25);
-                ui.label(RichText::new("Aucun jeu dans votre bibliothèque").size(22.0).color(FG));
+                ui.label(RichText::new("Aucun jeu dans votre bibliothèque").size(22.0).color(p.fg));
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new("Ajoutez un exécutable, scannez votre dossier de jeux, ou glissez-déposez-les ici.")
-                        .color(FG_MUTED),
+                        .color(p.fg_muted),
                 );
                 ui.add_space(18.0);
                 ui.horizontal(|ui| {
                     let largeur = 420.0;
                     ui.add_space(((ui.available_width() - largeur) / 2.0).max(0.0));
                     if ui
-                        .add(egui::Button::new(RichText::new("+  Ajouter un jeu").color(Color32::BLACK)).fill(ACCENT))
+                        .add(egui::Button::new(RichText::new("+  Ajouter un jeu").color(p.sur_accent())).fill(p.accent))
                         .clicked()
                     {
                         self.choisir_exe();
@@ -774,26 +1122,33 @@ impl App {
         }
 
         let (favoris, autres) = self.listes_visibles();
-        let recherche_active = !self.recherche.trim().is_empty();
+        let filtre_actif = !self.recherche.trim().is_empty() || self.filtre_tag.is_some();
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(4.0);
             egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 0)).show(ui, |ui| {
-                if recherche_active && favoris.is_empty() && autres.is_empty() {
+                self.filtres_tags(ui);
+
+                if filtre_actif && favoris.is_empty() && autres.is_empty() {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new(format!("Aucun jeu ne correspond à « {} ».", self.recherche.trim())).color(FG_MUTED));
+                        let texte = if self.recherche.trim().is_empty() {
+                            "Aucun jeu avec ce tag.".to_string()
+                        } else {
+                            format!("Aucun jeu ne correspond à « {} ».", self.recherche.trim())
+                        };
+                        ui.label(RichText::new(texte).color(p.fg_muted));
                     });
                     return;
                 }
 
-                if !recherche_active || !favoris.is_empty() {
+                if !filtre_actif || !favoris.is_empty() {
                     titre_section(ui, "Vos favoris ⭐");
                     if favoris.is_empty() {
                         ui.label(
                             RichText::new("Aucun favori pour le moment. Clic droit sur un jeu ➔ Ajouter aux favoris.")
                                 .italics()
-                                .color(FG_MUTED),
+                                .color(p.fg_muted),
                         );
                         ui.add_space(16.0);
                     } else {
@@ -803,7 +1158,12 @@ impl App {
 
                 if !autres.is_empty() {
                     ui.add_space(12.0);
-                    titre_section(ui, if recherche_active { "Résultats" } else { "Autres jeux" });
+                    let titre = match (&self.filtre_tag, self.recherche.trim().is_empty()) {
+                        (_, false) => "Résultats".to_string(),
+                        (Some(t), true) => t.clone(),
+                        (None, true) => "Autres jeux".to_string(),
+                    };
+                    titre_section(ui, &titre);
                     self.grille(ui, &autres, actions);
                 }
                 ui.add_space(24.0);
@@ -829,10 +1189,62 @@ impl App {
         }
     }
 
+    /// Dessine l'icône d'un jeu (ou son initiale tant qu'elle n'est pas prête).
+    fn dessiner_icone(&mut self, ui: &egui::Ui, jeu: &Jeu, zone: egui::Rect, manquant: bool) {
+        let p = theme::p();
+        let cote = zone.width();
+        let peintre = ui.painter_at(zone.expand(2.0));
+        match self.icones.texture(jeu.id, &jeu.exe, jeu.icone_perso.as_deref()) {
+            Some(t) => {
+                let ts = t.size_vec2();
+                let echelle = (cote / ts.x).min(cote / ts.y);
+                let r = egui::Rect::from_center_size(zone.center(), ts * echelle);
+                let mut img = egui::Image::new(&t).corner_radius(CornerRadius::same(8));
+                if manquant {
+                    img = img.tint(Color32::from_gray(90));
+                }
+                img.paint_at(ui, r);
+            }
+            None => {
+                peintre.rect_filled(zone.shrink(6.0), CornerRadius::same(14), p.bg_btn);
+                peintre.rect_stroke(
+                    zone.shrink(6.0),
+                    CornerRadius::same(14),
+                    Stroke::new(1.5, p.bordure),
+                    egui::StrokeKind::Inside,
+                );
+                let initiale = jeu
+                    .nom
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_uppercase()
+                    .to_string();
+                peintre.text(
+                    zone.center(),
+                    Align2::CENTER_CENTER,
+                    initiale,
+                    FontId::new(cote * 0.42, theme::gras()),
+                    p.fg_muted,
+                );
+            }
+        }
+        if manquant {
+            peintre.text(
+                zone.center_bottom() - Vec2::new(0.0, 8.0),
+                Align2::CENTER_BOTTOM,
+                "Introuvable",
+                FontId::new(13.0, theme::gras()),
+                p.danger,
+            );
+        }
+    }
+
     fn tuile(&mut self, ui: &mut egui::Ui, id: u64, taille: Vec2, actions: &mut Vec<Action>) {
         let Some(jeu) = self.jeu(id).cloned() else {
             return;
         };
+        let p = theme::p();
         let manquant = self.manquants.contains(&id);
         let cote = self.config.taille_tuile;
 
@@ -844,61 +1256,12 @@ impl App {
         let peintre = ui.painter_at(rect.expand(2.0));
 
         if survol {
-            peintre.rect_filled(rect, CornerRadius::same(10), BG_TUILE_HOVER);
+            peintre.rect_filled(rect, CornerRadius::same(10), p.bg_tuile_hover);
         }
 
-        // Icône
         let zone_icone =
             egui::Rect::from_min_size(rect.min + Vec2::new(12.0, 10.0), Vec2::splat(cote));
-        let texture = self
-            .icones
-            .texture(id, &jeu.exe, jeu.icone_perso.as_deref());
-        match texture {
-            Some(t) => {
-                let ts = t.size_vec2();
-                let echelle = (cote / ts.x).min(cote / ts.y);
-                let r = egui::Rect::from_center_size(zone_icone.center(), ts * echelle);
-                let mut img = egui::Image::new(&t).corner_radius(CornerRadius::same(8));
-                if manquant {
-                    img = img.tint(Color32::from_gray(90));
-                }
-                img.paint_at(ui, r);
-            }
-            None => {
-                // Icône provisoire : initiale du jeu.
-                peintre.rect_filled(zone_icone.shrink(6.0), CornerRadius::same(14), BG_BTN);
-                peintre.rect_stroke(
-                    zone_icone.shrink(6.0),
-                    CornerRadius::same(14),
-                    Stroke::new(1.5, BORDURE),
-                    egui::StrokeKind::Inside,
-                );
-                let initiale = jeu
-                    .nom
-                    .chars()
-                    .next()
-                    .unwrap_or('?')
-                    .to_uppercase()
-                    .to_string();
-                peintre.text(
-                    zone_icone.center(),
-                    Align2::CENTER_CENTER,
-                    initiale,
-                    FontId::new(cote * 0.42, theme::gras()),
-                    FG_MUTED,
-                );
-            }
-        }
-
-        if manquant {
-            peintre.text(
-                zone_icone.center_bottom() - Vec2::new(0.0, 8.0),
-                Align2::CENTER_BOTTOM,
-                "Introuvable",
-                FontId::new(13.0, theme::gras()),
-                DANGER,
-            );
-        }
+        self.dessiner_icone(ui, &jeu, zone_icone, manquant);
 
         // Nom (ou champ de renommage)
         let zone_nom = egui::Rect::from_min_max(
@@ -933,7 +1296,7 @@ impl App {
             let mut job = egui::text::LayoutJob::simple(
                 jeu.nom.clone(),
                 FontId::new(14.0, theme::gras()),
-                if manquant { FG_MUTED } else { FG },
+                if manquant { p.fg_muted } else { p.fg },
                 zone_nom.width(),
             );
             job.halign = egui::Align::Center;
@@ -941,7 +1304,7 @@ impl App {
             job.wrap.break_anywhere = false;
             job.wrap.overflow_character = Some('…');
             let galley = ui.painter().layout_job(job);
-            peintre.galley(egui::pos2(zone_nom.center().x, zone_nom.top()), galley, FG);
+            peintre.galley(egui::pos2(zone_nom.center().x, zone_nom.top()), galley, p.fg);
         }
 
         // Interactions
@@ -950,18 +1313,25 @@ impl App {
         }
         let reponse = reponse.on_hover_cursor(egui::CursorIcon::PointingHand);
         let reponse = if survol && !reponse.context_menu_opened() {
-            reponse.on_hover_text_at_pointer(
-                RichText::new(jeu.exe.display().to_string())
-                    .small()
-                    .color(FG_MUTED),
-            )
+            reponse.on_hover_ui_at_pointer(|ui| {
+                ui.label(RichText::new(resume_jeu(&jeu)).small());
+                if !jeu.tags.is_empty() {
+                    ui.label(RichText::new(format!("🏷 {}", jeu.tags.join(", "))).small());
+                }
+                ui.label(
+                    RichText::new(jeu.exe.display().to_string())
+                        .small()
+                        .color(p.fg_muted),
+                );
+            })
         } else {
             reponse
         };
 
         reponse.context_menu(|ui| {
             ui.set_min_width(230.0);
-            ui.label(RichText::new(&jeu.nom).strong().color(ACCENT));
+            ui.label(RichText::new(&jeu.nom).strong().color(p.accent));
+            ui.label(RichText::new(resume_jeu(&jeu)).small().color(p.fg_muted));
             ui.separator();
             if ui.button("▶  Lancer").clicked() {
                 actions.push(Action::Lancer(id));
@@ -979,6 +1349,10 @@ impl App {
             };
             if ui.button(fav).clicked() {
                 actions.push(Action::BasculerFavori(id));
+                ui.close();
+            }
+            if ui.button("🏷  Tags…").clicked() {
+                actions.push(Action::EditerTags(id));
                 ui.close();
             }
             ui.separator();
@@ -1005,110 +1379,12 @@ impl App {
                 ui.close();
             }
             if ui
-                .button(RichText::new("🗑  Supprimer le jeu du disque…").color(DANGER))
+                .button(RichText::new("🗑  Supprimer le jeu du disque…").color(p.danger))
                 .clicked()
             {
                 actions.push(Action::DemanderSuppression(id));
                 ui.close();
             }
-        });
-    }
-
-    fn parametres(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.set_max_width(640.0);
-                ui.add_space(10.0);
-                ui.label(RichText::new("Configuration du launcher").size(26.0).family(theme::gras()));
-                ui.add_space(24.0);
-
-                carte(ui, "Affichage", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().slider_width = 260.0;
-                        ui.label("Taille des icônes");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.config.taille_tuile, TAILLE_TUILE_MIN..=TAILLE_TUILE_MAX)
-                                .step_by(5.0)
-                                .suffix(" px"),
-                        );
-                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                            self.sauver();
-                        }
-                    });
-                    if ui
-                        .checkbox(&mut self.config.fermer_apres_lancement, "Fermer le launcher après le lancement d'un jeu")
-                        .changed()
-                    {
-                        self.sauver();
-                    }
-                });
-
-                carte(ui, "Bibliothèque", |ui| {
-                    let favoris = self.config.jeux.iter().filter(|j| j.favori).count();
-                    ui.label(format!("{} jeux, dont {} favoris.", self.config.jeux.len(), favoris));
-                    if let Some(d) = &self.config.dernier_dossier_scan {
-                        ui.label(RichText::new(format!("Dernier dossier scanné : {}", d.display())).color(FG_MUTED));
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.add_enabled(self.scan.is_none(), egui::Button::new("🗁  Scanner un dossier…")).clicked() {
-                            self.choisir_dossier_scan(&ctx);
-                        }
-                        if let Some(d) = self.config.dernier_dossier_scan.clone()
-                            && ui
-                                .add_enabled(self.scan.is_none(), egui::Button::new("🔄  Re-scanner"))
-                                .on_hover_text("Ajoute les jeux installés depuis le dernier scan")
-                                .clicked()
-                            {
-                                self.lancer_scan(d, &ctx);
-                            }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Vérifier les jeux introuvables").clicked() {
-                            self.verifier_manquants();
-                            let n = self.manquants.len();
-                            self.notifier(match n {
-                                0 => "Tous les jeux sont présents.".to_string(),
-                                n => format!("{n} jeu(x) introuvable(s)."),
-                            });
-                        }
-                        let n = self.manquants.len();
-                        if ui
-                            .add_enabled(n > 0, egui::Button::new(format!("Retirer les introuvables ({n})")))
-                            .clicked()
-                        {
-                            self.dialogue = Some(Dialogue::RetirerIntrouvables);
-                        }
-                    });
-                });
-
-                carte(ui, "Données", |ui| {
-                    ui.label(RichText::new("Configuration, icônes personnalisées et cache :").color(FG_MUTED));
-                    ui.label(RichText::new(self.dossiers.racine.display().to_string()).color(ACCENT).strong());
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("🗁  Ouvrir le dossier").clicked() {
-                            let racine = self.dossiers.racine.clone();
-                            if let Err(e) = platform::ouvrir_dossier(&racine) {
-                                self.notifier_erreur(e);
-                            }
-                        }
-                        if ui.button("Vider le cache d'icônes").clicked() {
-                            self.vider_cache();
-                        }
-                    });
-                });
-
-                carte(ui, "Astuces", |ui| {
-                    for astuce in [
-                        "Double-clic sur un jeu pour le lancer, clic droit pour les options.",
-                        "Ctrl+F pour rechercher, Entrée lance le premier résultat, Échap efface.",
-                        "Glissez-déposez des .exe ou un dossier de jeux directement dans la fenêtre.",
-                        "« Supprimer le jeu du disque » envoie son dossier à la corbeille : c'est récupérable.",
-                    ] {
-                        ui.label(RichText::new(format!("•  {astuce}")).color(FG_MUTED));
-                    }
-                });
-            });
         });
     }
 
@@ -1120,6 +1396,7 @@ impl App {
 
     fn fenetre_scan(&mut self, ctx: &egui::Context) {
         let Some(scan) = &self.scan else { return };
+        let p = theme::p();
         let annuler = egui::Modal::new(egui::Id::unique("scan")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading("Scan en cours…");
@@ -1132,9 +1409,9 @@ impl App {
             ui.add(
                 egui::ProgressBar::new(progression)
                     .show_percentage()
-                    .fill(ACCENT.linear_multiply(0.6)),
+                    .fill(p.accent.linear_multiply(0.6)),
             );
-            ui.label(RichText::new(&scan.nom).color(FG_MUTED));
+            ui.label(RichText::new(&scan.nom).color(p.fg_muted));
             ui.add_space(8.0);
             ui.button("Annuler").clicked()
         });
@@ -1145,6 +1422,7 @@ impl App {
 
     fn fenetre_revue(&mut self, ctx: &egui::Context) {
         let Some(revue) = &mut self.revue else { return };
+        let p = theme::p();
         let mut fermer = false;
         let mut importer = false;
 
@@ -1156,7 +1434,7 @@ impl App {
                     "L'exécutable le plus probable de chaque jeu est pré-coché. \
                      Vous pouvez corriger les noms avant d'importer.",
                 )
-                .color(FG_MUTED),
+                .color(p.fg_muted),
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -1185,7 +1463,7 @@ impl App {
                         if c.groupe != groupe_courant {
                             groupe_courant = c.groupe.clone();
                             ui.add_space(6.0);
-                            ui.label(RichText::new(&c.groupe).strong().color(ACCENT));
+                            ui.label(RichText::new(&c.groupe).strong().color(p.accent));
                         }
                         ui.push_id(i, |ui| {
                             ui.horizontal(|ui| {
@@ -1199,7 +1477,7 @@ impl App {
                                     .file_name()
                                     .map(|f| f.to_string_lossy().into_owned())
                                     .unwrap_or_default();
-                                ui.label(RichText::new(rel).small().color(FG_MUTED))
+                                ui.label(RichText::new(rel).small().color(p.fg_muted))
                                     .on_hover_text(c.exe.display().to_string());
                             });
                         });
@@ -1213,9 +1491,9 @@ impl App {
                     .add_enabled(
                         n > 0,
                         egui::Button::new(
-                            RichText::new(format!("Importer {n} jeu(x)")).color(Color32::BLACK),
+                            RichText::new(format!("Importer {n} jeu(x)")).color(p.sur_accent()),
                         )
-                        .fill(ACCENT),
+                        .fill(p.accent),
                     )
                     .clicked()
                 {
@@ -1239,8 +1517,16 @@ impl App {
         let Some(dialogue) = &mut self.dialogue else {
             return;
         };
+        let p = theme::p();
         let mut fermer = false;
         let mut action: Option<ActionDialogue> = None;
+        // Action appliquée sans fermer la boîte de dialogue (édition des tags).
+        let mut modification: Option<ActionDialogue> = None;
+        // Une commande « Retour » de la manette ferme la boîte de dialogue.
+        if let Some(i) = self.commandes.iter().position(|c| *c == Commande::Retour) {
+            self.commandes.remove(i);
+            fermer = true;
+        }
 
         let nom = |id: &u64, jeux: &[Jeu]| {
             jeux.iter()
@@ -1248,6 +1534,7 @@ impl App {
                 .map(|j| j.nom.clone())
                 .unwrap_or_default()
         };
+        let tous_tags = self.config.tags();
         let jeux = &self.config.jeux;
 
         let reponse = egui::Modal::new(egui::Id::unique("dialogue")).show(ctx, |ui| {
@@ -1262,7 +1549,7 @@ impl App {
                     ));
                     ui.label(
                         RichText::new("Le jeu reste installé sur votre ordinateur.")
-                            .color(FG_MUTED),
+                            .color(p.fg_muted),
                     );
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -1276,7 +1563,7 @@ impl App {
                 }
                 Dialogue::Supprimer { id, cible } => {
                     let (id, cible) = (*id, cible.clone());
-                    ui.heading(RichText::new("Supprimer le jeu du disque").color(DANGER));
+                    ui.heading(RichText::new("Supprimer le jeu du disque").color(p.danger));
                     ui.label(format!(
                         "Le dossier suivant de « {} » va être envoyé à la corbeille :",
                         nom(&id, jeux)
@@ -1284,22 +1571,23 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(cible.display().to_string())
-                            .color(ACCENT)
+                            .color(p.accent)
                             .strong(),
                     );
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("Vous pourrez le restaurer depuis la corbeille de Windows.")
-                            .color(FG_MUTED),
+                            .color(p.fg_muted),
                     );
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("Mettre à la corbeille").color(Color32::BLACK),
+                                    RichText::new("Mettre à la corbeille")
+                                        .color(theme::texte_sur(p.danger)),
                                 )
-                                .fill(DANGER),
+                                .fill(p.danger),
                             )
                             .clicked()
                         {
@@ -1317,10 +1605,10 @@ impl App {
                         "Par sécurité, le dossier de « {} » ne sera pas supprimé :",
                         nom(&id, jeux)
                     ));
-                    ui.label(RichText::new(raison.as_str()).color(DANGER));
+                    ui.label(RichText::new(raison.as_str()).color(p.danger));
                     ui.label(
                         RichText::new("Vous pouvez le supprimer vous-même depuis l'Explorateur.")
-                            .color(FG_MUTED),
+                            .color(p.fg_muted),
                     );
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -1345,7 +1633,7 @@ impl App {
                         nom(&id, jeux)
                     ));
                     if let Some(j) = jeux.iter().find(|j| j.id == id) {
-                        ui.label(RichText::new(j.exe.display().to_string()).color(FG_MUTED));
+                        ui.label(RichText::new(j.exe.display().to_string()).color(p.fg_muted));
                     }
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -1375,7 +1663,7 @@ impl App {
                         .max_height(200.0)
                         .show(ui, |ui| {
                             for n in &noms {
-                                ui.label(RichText::new(format!("•  {n}")).color(FG_MUTED));
+                                ui.label(RichText::new(format!("•  {n}")).color(p.fg_muted));
                             }
                         });
                     ui.add_space(10.0);
@@ -1407,7 +1695,7 @@ impl App {
                             "Pour « {} » (ex. -windowed -nointro)",
                             nom(&id, jeux)
                         ))
-                        .color(FG_MUTED),
+                        .color(p.fg_muted),
                     );
                     let r = ui.add(egui::TextEdit::singleline(texte).desired_width(440.0));
                     let entree = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -1427,11 +1715,221 @@ impl App {
                         }
                     });
                 }
+                Dialogue::Tags { id, saisie } => {
+                    let id = *id;
+                    let Some(jeu) = jeux.iter().find(|j| j.id == id) else {
+                        fermer = true;
+                        return;
+                    };
+                    ui.heading("Tags");
+                    ui.label(RichText::new(format!("Pour « {} »", jeu.nom)).color(p.fg_muted));
+                    ui.add_space(6.0);
+
+                    ui.label(RichText::new("Tags du jeu").strong());
+                    if jeu.tags.is_empty() {
+                        ui.label(RichText::new("Aucun tag pour l'instant.").italics().color(p.fg_muted));
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        for t in &jeu.tags {
+                            if puce(ui, &format!("{t}  ✕"), true)
+                                .on_hover_text("Retirer ce tag")
+                                .clicked()
+                            {
+                                let t = t.clone();
+                                modification = Some(Box::new(move |app, _| {
+                                    if let Some(j) = app.config.jeu_mut(id) {
+                                        j.retirer_tag(&t);
+                                    }
+                                    app.sauver();
+                                }));
+                            }
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Nouveau tag").strong());
+                    let mut ajouter = false;
+                    ui.horizontal(|ui| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(saisie)
+                                .hint_text("Coop, Rétro, À finir…")
+                                .desired_width(280.0),
+                        );
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            ajouter = true;
+                            r.request_focus();
+                        }
+                        if ui.add_enabled(!saisie.trim().is_empty(), egui::Button::new("Ajouter")).clicked() {
+                            ajouter = true;
+                        }
+                    });
+                    if ajouter && !saisie.trim().is_empty() {
+                        let t = std::mem::take(saisie);
+                        modification = Some(Box::new(move |app, _| {
+                            if let Some(j) = app.config.jeu_mut(id) {
+                                j.ajouter_tag(&t);
+                            }
+                            app.sauver();
+                        }));
+                    }
+
+                    let autres: Vec<&String> = tous_tags
+                        .iter()
+                        .map(|(t, _)| t)
+                        .filter(|t| !jeu.a_tag(t))
+                        .collect();
+                    if !autres.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Tags existants").strong());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                            for t in autres {
+                                if puce(ui, &format!("+ {t}"), false).clicked() {
+                                    let t = t.clone();
+                                    modification = Some(Box::new(move |app, _| {
+                                        if let Some(j) = app.config.jeu_mut(id) {
+                                            j.ajouter_tag(&t);
+                                        }
+                                        app.sauver();
+                                    }));
+                                }
+                            }
+                        });
+                    }
+                    ui.add_space(12.0);
+                    if ui.button("Terminé").clicked() {
+                        fermer = true;
+                    }
+                }
+                Dialogue::RenommerTag { ancien, texte } => {
+                    ui.heading("Renommer le tag");
+                    ui.label(
+                        RichText::new(format!("« {ancien} » sera renommé sur tous les jeux."))
+                            .color(p.fg_muted),
+                    );
+                    let r = ui.add(egui::TextEdit::singleline(texte).desired_width(300.0));
+                    let entree = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if (ui.button("Renommer").clicked() || entree) && !texte.trim().is_empty() {
+                            let (a, n) = (ancien.clone(), texte.trim().to_string());
+                            action = Some(Box::new(move |app, _| {
+                                if app.filtre_tag.as_ref().is_some_and(|f| f.eq_ignore_ascii_case(&a)) {
+                                    app.filtre_tag = Some(n.clone());
+                                }
+                                app.config.renommer_tag(&a, &n);
+                                app.sauver();
+                            }));
+                        }
+                        if ui.button("Annuler").clicked() {
+                            fermer = true;
+                        }
+                    });
+                }
+                Dialogue::SupprimerTag(tag) => {
+                    let n = jeux.iter().filter(|j| j.a_tag(tag)).count();
+                    ui.heading("Supprimer le tag");
+                    ui.label(format!("Retirer le tag « {tag} » de {n} jeu(x) ?"));
+                    ui.label(RichText::new("Les jeux eux-mêmes ne sont pas touchés.").color(p.fg_muted));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Supprimer le tag").clicked() {
+                            let t = tag.clone();
+                            action = Some(Box::new(move |app, _| {
+                                app.config.supprimer_tag(&t);
+                                app.sauver();
+                            }));
+                        }
+                        if ui.button("Annuler").clicked() {
+                            fermer = true;
+                        }
+                    });
+                }
+                Dialogue::Restaurer(info) => {
+                    ui.heading("Restaurer une sauvegarde");
+                    ui.label(format!(
+                        "Remplacer la bibliothèque et les réglages actuels par la sauvegarde du {} ?",
+                        sauvegarde::libelle_date(info.date)
+                    ));
+                    if let Some(n) = info.nb_jeux {
+                        ui.label(RichText::new(format!("Elle contient {n} jeu(x).")).color(p.fg_muted));
+                    }
+                    ui.label(
+                        RichText::new("Une copie de l'état actuel est faite avant, vous pourrez revenir en arrière.")
+                            .color(p.fg_muted),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Restaurer").clicked() {
+                            let chemin = info.chemin.clone();
+                            action = Some(Box::new(move |app, ctx| match sauvegarde::lire(&chemin) {
+                                Ok(c) => {
+                                    app.remplacer_config(c, ctx);
+                                    app.notifier("Sauvegarde restaurée.");
+                                }
+                                Err(e) => app.notifier_erreur(e),
+                            }));
+                        }
+                        if ui.button("Annuler").clicked() {
+                            fermer = true;
+                        }
+                    });
+                }
+                Dialogue::Importer { config, fichier } => {
+                    let n = config.jeux.len();
+                    let nouveaux = config
+                        .jeux
+                        .iter()
+                        .filter(|j| !jeux.iter().any(|k| cle_chemin(&k.exe) == cle_chemin(&j.exe)))
+                        .count();
+                    ui.heading("Importer une bibliothèque");
+                    ui.label(format!("« {fichier} » contient {n} jeu(x), dont {nouveaux} absent(s) de votre bibliothèque."));
+                    ui.label(
+                        RichText::new("Les icônes personnalisées ne font pas partie de l'export.")
+                            .color(p.fg_muted),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                nouveaux > 0,
+                                egui::Button::new(
+                                    RichText::new(format!("Ajouter les {nouveaux} jeu(x) manquant(s)"))
+                                        .color(p.sur_accent()),
+                                )
+                                .fill(p.accent),
+                            )
+                            .clicked()
+                        {
+                            let c = (**config).clone();
+                            action = Some(Box::new(move |app, _| {
+                                let n = app.config.fusionner(c);
+                                app.sauver();
+                                app.verifier_manquants();
+                                app.notifier(format!("{n} jeu(x) importé(s)."));
+                            }));
+                        }
+                        if ui.button("Tout remplacer (bibliothèque et réglages)").clicked() {
+                            let c = (**config).clone();
+                            action = Some(Box::new(move |app, ctx| {
+                                app.remplacer_config(c, ctx);
+                                app.notifier("Bibliothèque importée.");
+                            }));
+                        }
+                        if ui.button("Annuler").clicked() {
+                            fermer = true;
+                        }
+                    });
+                }
             }
         });
 
         if reponse.should_close() {
             fermer = true;
+        }
+        if let Some(m) = modification {
+            m(self, ctx);
         }
         if let Some(a) = action {
             self.dialogue = None;
@@ -1461,6 +1959,7 @@ impl App {
 
     fn afficher_notification(&mut self, ctx: &egui::Context) {
         let Some(n) = &self.notification else { return };
+        let p = theme::p();
         let ecoule = n.depuis.elapsed();
         if ecoule > DUREE_NOTIF {
             self.notification = None;
@@ -1474,22 +1973,40 @@ impl App {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::new()
-                    .fill(theme::BG_MENU)
+                    .fill(p.bg_menu)
                     .stroke(Stroke::new(
                         1.0,
                         if n.erreur {
-                            DANGER
+                            p.danger
                         } else {
-                            ACCENT.linear_multiply(0.5)
+                            p.accent.linear_multiply(0.5)
                         },
                     ))
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
-                        ui.label(RichText::new(&n.texte).color(if n.erreur { DANGER } else { FG }));
+                        ui.label(RichText::new(&n.texte).color(if n.erreur { p.danger } else { p.fg }));
                     });
             });
     }
+}
+
+/// « 12 h 30 de jeu · 23 lancements · joué hier »
+fn resume_jeu(jeu: &Jeu) -> String {
+    let mut parties = vec![if jeu.temps_jeu > 0 {
+        format!("{} de jeu", stats::duree(jeu.temps_jeu))
+    } else {
+        "Pas encore de temps de jeu".to_string()
+    }];
+    match jeu.nb_lancements {
+        0 => {}
+        1 => parties.push("1 lancement".into()),
+        n => parties.push(format!("{n} lancements")),
+    }
+    if let Some(t) = jeu.dernier_lancement {
+        parties.push(format!("joué {}", stats::il_y_a(t, maintenant())));
+    }
+    parties.join(" · ")
 }
 
 fn titre_section(ui: &mut egui::Ui, texte: &str) {
@@ -1497,10 +2014,26 @@ fn titre_section(ui: &mut egui::Ui, texte: &str) {
     ui.add_space(6.0);
 }
 
+/// Petite étiquette arrondie cliquable (filtres, tags).
+fn puce(ui: &mut egui::Ui, texte: &str, actif: bool) -> egui::Response {
+    let p = theme::p();
+    let (fond, encre) = if actif {
+        (p.accent, p.sur_accent())
+    } else {
+        (p.bg_btn, p.fg)
+    };
+    ui.add(
+        egui::Button::new(RichText::new(texte).color(encre))
+            .fill(fond)
+            .corner_radius(CornerRadius::same(14)),
+    )
+}
+
 fn carte(ui: &mut egui::Ui, titre: &str, contenu: impl FnOnce(&mut egui::Ui)) {
+    let p = theme::p();
     egui::Frame::new()
-        .fill(theme::BG_MENU)
-        .stroke(Stroke::new(1.0, BORDURE))
+        .fill(p.bg_menu)
+        .stroke(Stroke::new(1.0, p.bordure))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| {
@@ -1515,16 +2048,34 @@ fn carte(ui: &mut egui::Ui, titre: &str, contenu: impl FnOnce(&mut egui::Ui)) {
 }
 
 impl eframe::App for App {
+    /// Tourne aussi quand la fenêtre est réduite : c'est ici qu'on suit les
+    /// parties en cours et qu'on fait revenir le launcher à la fin.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(t) = self.reduire_a {
+            if Instant::now() >= t {
+                self.reduire_a = None;
+                if self.parties.is_empty() {
+                    // Rien à suivre (lancement raté entre-temps) : comportement d'origine.
+                    if self.config.fermer_apres_lancement {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+            } else {
+                ctx.request_repaint_after(t - Instant::now());
+            }
+        }
+        self.suivre_parties(ctx);
+        self.suivre_manette(ctx);
+        if self.sauvegarde_differee && !ctx.input(|i| i.pointer.any_down()) {
+            self.sauver();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-
-        if let Some(t) = self.fermer_a {
-            if Instant::now() >= t {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
-            }
-            ctx.request_repaint_after(t - Instant::now());
-        }
+        let p = theme::p();
 
         self.icones.recevoir(&ctx);
         self.suivre_scan();
@@ -1532,17 +2083,26 @@ impl eframe::App for App {
         self.raccourcis_clavier(&ctx);
 
         let mut actions = Vec::new();
+        if self.mode_tv && self.dialogue.is_none() {
+            self.clavier_tv(&ctx);
+        }
+        self.traiter_commandes(&ctx, &mut actions);
 
-        egui::Panel::top("entete")
-            .frame(egui::Frame::new().fill(theme::BG_MAIN))
-            .show(ui, |ui| self.entete(ui, &mut actions));
+        if self.mode_tv {
+            self.vue_tv(ui, &mut actions);
+        } else {
+            egui::Panel::top("entete")
+                .frame(egui::Frame::new().fill(p.bg_main))
+                .show(ui, |ui| self.entete(ui, &mut actions));
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG_MAIN))
-            .show(ui, |ui| match self.vue {
-                Vue::Bibliotheque => self.bibliotheque(ui, &mut actions),
-                Vue::Parametres => self.parametres(ui),
-            });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(p.bg_main))
+                .show(ui, |ui| match self.vue {
+                    Vue::Bibliotheque => self.bibliotheque(ui, &mut actions),
+                    Vue::Parametres => self.parametres(ui),
+                    Vue::Statistiques => self.statistiques(ui),
+                });
+        }
 
         for a in actions {
             self.executer(a, &ctx);
@@ -1550,5 +2110,9 @@ impl eframe::App for App {
 
         self.fenetres(&ctx);
         self.afficher_notification(&ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.enregistrer_parties_en_cours();
     }
 }
