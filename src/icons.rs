@@ -14,21 +14,37 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 pub const TAILLE_ICONE: u32 = 256;
+/// Tailles maximales en mémoire : la moitié de 600x900 et de 1920x620.
+const JAQUETTE_MAX: (u32, u32) = (300, 450);
+const BANNIERE_MAX: (u32, u32) = (960, 310);
+
+/// Les différentes images d'un jeu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Genre {
+    Icone,
+    Jaquette,
+    Banniere,
+}
+
+const GENRES: [Genre; 3] = [Genre::Icone, Genre::Jaquette, Genre::Banniere];
+
+type Cle = (u64, Genre);
 
 #[derive(Clone)]
 enum Source {
     Perso(PathBuf),
     Exe(PathBuf),
+    Visuel(PathBuf, (u32, u32)),
 }
 
 struct Demande {
-    id: u64,
+    cle: Cle,
     generation: u32,
     source: Source,
 }
 
 struct Reponse {
-    id: u64,
+    cle: Cle,
     generation: u32,
     image: Option<egui::ColorImage>,
 }
@@ -42,9 +58,10 @@ enum Etat {
 pub struct ChargeurIcones {
     envoi: Sender<Demande>,
     reception: Receiver<Reponse>,
-    etats: HashMap<u64, Etat>,
-    generations: HashMap<u64, u32>,
+    etats: HashMap<Cle, Etat>,
+    generations: HashMap<Cle, u32>,
     dossier_icones: PathBuf,
+    dossier_jaquettes: PathBuf,
 }
 
 impl ChargeurIcones {
@@ -76,10 +93,11 @@ impl ChargeurIcones {
                         let image = match &d.source {
                             Source::Perso(p) => charger_image_fichier(p),
                             Source::Exe(p) => charger_icone_exe(p, &cache),
+                            Source::Visuel(p, max) => decoder_image(p, *max),
                         };
                         if tx
                             .send(Reponse {
-                                id: d.id,
+                                cle: d.cle,
                                 generation: d.generation,
                                 image,
                             })
@@ -99,24 +117,25 @@ impl ChargeurIcones {
             etats: HashMap::new(),
             generations: HashMap::new(),
             dossier_icones: dossiers.icones.clone(),
+            dossier_jaquettes: dossiers.jaquettes.clone(),
         }
     }
 
     /// Récupère les icônes décodées et les envoie au GPU. À appeler à chaque frame.
     pub fn recevoir(&mut self, ctx: &egui::Context) {
         while let Ok(r) = self.reception.try_recv() {
-            if self.generations.get(&r.id).copied().unwrap_or(0) != r.generation {
-                continue; // Réponse obsolète (icône changée entre-temps).
+            if self.generations.get(&r.cle).copied().unwrap_or(0) != r.generation {
+                continue; // Réponse obsolète (image changée entre-temps).
             }
             let etat = match r.image {
                 Some(img) => Etat::Pret(ctx.load_texture(
-                    format!("icone-{}-{}", r.id, r.generation),
+                    format!("image-{}-{:?}-{}", r.cle.0, r.cle.1, r.generation),
                     img,
                     egui::TextureOptions::LINEAR,
                 )),
                 None => Etat::Echec,
             };
-            self.etats.insert(r.id, etat);
+            self.etats.insert(r.cle, etat);
         }
     }
 
@@ -127,36 +146,74 @@ impl ChargeurIcones {
         exe: &Path,
         icone_perso: Option<&str>,
     ) -> Option<egui::TextureHandle> {
-        match self.etats.get(&id) {
-            Some(Etat::Pret(t)) => return Some(t.clone()),
-            Some(Etat::EnCours) | Some(Etat::Echec) => return None,
-            None => {}
-        }
         let source = match icone_perso {
             Some(nom) => Source::Perso(self.dossier_icones.join(nom)),
             None => Source::Exe(exe.to_path_buf()),
         };
-        let generation = self.generations.get(&id).copied().unwrap_or(0);
-        self.etats.insert(id, Etat::EnCours);
+        self.obtenir((id, Genre::Icone), source)
+    }
+
+    /// Texture d'une jaquette ou d'une bannière, comme [`Self::texture`].
+    pub fn visuel(&mut self, id: u64, genre: Genre, fichier: &str) -> Option<egui::TextureHandle> {
+        let max = match genre {
+            Genre::Banniere => BANNIERE_MAX,
+            Genre::Jaquette | Genre::Icone => JAQUETTE_MAX,
+        };
+        let source = Source::Visuel(self.dossier_jaquettes.join(fichier), max);
+        self.obtenir((id, genre), source)
+    }
+
+    fn obtenir(&mut self, cle: Cle, source: Source) -> Option<egui::TextureHandle> {
+        match self.etats.get(&cle) {
+            Some(Etat::Pret(t)) => return Some(t.clone()),
+            Some(Etat::EnCours) | Some(Etat::Echec) => return None,
+            None => {}
+        }
+        let generation = self.generations.get(&cle).copied().unwrap_or(0);
+        self.etats.insert(cle, Etat::EnCours);
         let _ = self.envoi.send(Demande {
-            id,
+            cle,
             generation,
             source,
         });
         None
     }
 
-    /// Force le rechargement d'une icône (après modification).
+    /// Force le rechargement d'une image (après modification).
+    pub fn invalider_genre(&mut self, id: u64, genre: Genre) {
+        let cle = (id, genre);
+        self.etats.remove(&cle);
+        *self.generations.entry(cle).or_insert(0) += 1;
+    }
+
+    /// Force le rechargement de toutes les images d'un jeu.
     pub fn invalider(&mut self, id: u64) {
-        self.etats.remove(&id);
-        *self.generations.entry(id).or_insert(0) += 1;
+        for genre in GENRES {
+            self.invalider_genre(id, genre);
+        }
     }
 
     pub fn tout_invalider(&mut self) {
-        let ids: Vec<u64> = self.etats.keys().copied().collect();
-        for id in ids {
-            self.invalider(id);
+        let cles: Vec<Cle> = self.etats.keys().copied().collect();
+        for (id, genre) in cles {
+            self.invalider_genre(id, genre);
         }
+    }
+}
+
+/// Coordonnées de texture qui remplissent une zone sans déformer l'image :
+/// ce qui dépasse est coupé de part et d'autre.
+pub fn uv_couvrir(image: egui::Vec2, zone: egui::Vec2) -> egui::Rect {
+    let plein = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    if image.x <= 0.0 || image.y <= 0.0 || zone.x <= 0.0 || zone.y <= 0.0 {
+        return plein;
+    }
+    let (ratio_image, ratio_zone) = (image.x / image.y, zone.x / zone.y);
+    let centre = egui::pos2(0.5, 0.5);
+    if ratio_image > ratio_zone {
+        egui::Rect::from_center_size(centre, egui::vec2(ratio_zone / ratio_image, 1.0))
+    } else {
+        egui::Rect::from_center_size(centre, egui::vec2(1.0, ratio_image / ratio_zone))
     }
 }
 
@@ -201,18 +258,18 @@ fn charger_icone_exe(exe: &Path, dossier_cache: &Path) -> Option<egui::ColorImag
 /// Décode un PNG / JPG / ICO / BMP / WebP. Pour un ICO, `image` choisit
 /// automatiquement la plus grande résolution disponible.
 fn charger_image_fichier(chemin: &Path) -> Option<egui::ColorImage> {
+    decoder_image(chemin, (TAILLE_ICONE, TAILLE_ICONE))
+}
+
+fn decoder_image(chemin: &Path, (largeur, hauteur): (u32, u32)) -> Option<egui::ColorImage> {
     let img = image::ImageReader::open(chemin)
         .ok()?
         .with_guessed_format()
         .ok()?
         .decode()
         .ok()?;
-    let img = if img.width() > TAILLE_ICONE || img.height() > TAILLE_ICONE {
-        img.resize(
-            TAILLE_ICONE,
-            TAILLE_ICONE,
-            image::imageops::FilterType::Lanczos3,
-        )
+    let img = if img.width() > largeur || img.height() > hauteur {
+        img.resize(largeur, hauteur, image::imageops::FilterType::Lanczos3)
     } else {
         img
     };
@@ -292,6 +349,26 @@ mod tests {
         }
         let r = rogner_transparence(img);
         assert_eq!(r.dimensions(), (80, 80));
+    }
+
+    #[test]
+    fn uv_coupe_les_cotes_d_une_image_trop_large() {
+        let uv = uv_couvrir(egui::vec2(200.0, 100.0), egui::vec2(100.0, 100.0));
+        assert_eq!((uv.left(), uv.right()), (0.25, 0.75));
+        assert_eq!((uv.top(), uv.bottom()), (0.0, 1.0));
+    }
+
+    #[test]
+    fn uv_coupe_le_haut_d_une_image_trop_haute() {
+        let uv = uv_couvrir(egui::vec2(100.0, 200.0), egui::vec2(100.0, 100.0));
+        assert_eq!((uv.left(), uv.right()), (0.0, 1.0));
+        assert_eq!((uv.top(), uv.bottom()), (0.25, 0.75));
+    }
+
+    #[test]
+    fn uv_entier_si_taille_nulle() {
+        let uv = uv_couvrir(egui::vec2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        assert_eq!(uv.size(), egui::vec2(1.0, 1.0));
     }
 
     #[test]

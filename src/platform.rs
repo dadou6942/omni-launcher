@@ -11,6 +11,14 @@ pub struct ImageRgba {
     pub pixels: Vec<u8>,
 }
 
+/// Ouvre une page web. Seules les adresses HTTPS sont acceptées.
+pub fn ouvrir_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("Adresse refusée par sécurité.".into());
+    }
+    imp::ouvrir_navigateur(url)
+}
+
 /// Envoie un fichier ou un dossier à la corbeille (récupérable).
 pub fn mettre_a_la_corbeille(chemin: &Path) -> Result<(), String> {
     trash::delete(chemin).map_err(|e| e.to_string())
@@ -33,7 +41,7 @@ mod imp {
     use windows::Win32::UI::WindowsAndMessaging::{
         DestroyIcon, GetIconInfo, HICON, ICONINFO, SW_SHOWNORMAL,
     };
-    use windows::core::{HSTRING, w};
+    use windows::core::{HSTRING, PCWSTR, w};
 
     /// Lance l'exécutable comme un double-clic dans l'Explorateur :
     /// gère l'élévation UAC et le dossier de travail.
@@ -73,6 +81,28 @@ mod imp {
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    pub fn ouvrir_navigateur(url: &str) -> Result<(), String> {
+        let url_h = HSTRING::from(url);
+        // SAFETY: `url_h` vit jusqu'au retour de l'appel, les autres pointeurs
+        // sont des constantes ou nuls, ce que ShellExecuteW accepte.
+        let resultat = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                &url_h,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let code = resultat.0 as isize;
+        if code > 32 {
+            Ok(())
+        } else {
+            Err(format!("Impossible d'ouvrir le navigateur (code {code})."))
+        }
     }
 
     /// Extrait l'icône principale d'un exe en haute définition (jusqu'à 256 px).
@@ -277,6 +307,14 @@ mod imp {
     pub fn ouvrir_dossier(dossier: &Path) -> Result<(), String> {
         std::process::Command::new("xdg-open")
             .arg(dossier)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn ouvrir_navigateur(url: &str) -> Result<(), String> {
+        std::process::Command::new("xdg-open")
+            .arg(url)
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())

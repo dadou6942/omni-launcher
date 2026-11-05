@@ -4,12 +4,15 @@
 mod app;
 mod config;
 mod icons;
+mod maj;
 mod manette;
 mod partie;
 mod platform;
+mod reseau;
 mod sauvegarde;
 mod scan;
 mod stats;
+mod steamgriddb;
 mod theme;
 
 use eframe::egui;

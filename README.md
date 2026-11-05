@@ -5,7 +5,7 @@ Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment
 La version 2 est une réécriture complète en **Rust** avec [egui](https://github.com/emilk/egui) : un seul exécutable autonome, sans Python ni dépendance à installer
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-lightgrey?logo=windows)
-![Version](https://img.shields.io/badge/version-2.1.0-blue)
+![Version](https://img.shields.io/badge/version-2.2.0-blue)
 
 ---
 
@@ -29,15 +29,20 @@ La version 2 est une réécriture complète en **Rust** avec [egui](https://gith
 - **Re-scan** : ajoute en un clic les jeux installés depuis le dernier scan.
 - **Glisser-déposer** de `.exe` ou d'un dossier de jeux directement dans la fenêtre.
 - **Icônes extraites nativement** des exécutables (API Windows, 256 px), mises en cache et chargées en arrière-plan.
+- **Trois vues** : icônes, jaquettes ou liste détaillée (nom, statut, temps de jeu, dernier lancement).
+- **Jaquettes et bannières** : téléchargées depuis [SteamGridDB](https://www.steamgriddb.com) avec votre clé d'API gratuite, jeu par jeu ou pour toute la bibliothèque, ou choisies parmi vos images.
+- **Section « Joués récemment »** en tête de la bibliothèque, désactivable.
 - **Favoris**, affichés en tête de la bibliothèque.
 - **Tags** (Coop, Rétro, À finir…) : plusieurs par jeu, filtres en un clic sous l'en-tête, renommage et suppression depuis les paramètres.
+- **Statut et notes par jeu** : à jouer, en cours, terminé, abandonné, avec filtres en un clic et notes libres.
 - **Temps de jeu** : pendant une partie, le launcher se réduit et surveille les processus du jeu (y compris quand l'exe n'est qu'un petit lanceur), puis enregistre la durée et revient ou se ferme.
 - **Statistiques** : temps total, 7 derniers jours, activité des 14 derniers jours, jeux les plus joués, temps par tag, jeux jamais lancés.
 - **Mode plein écran à la manette** (F11, bouton 🎮 ou Start) : grandes tuiles, navigation à la croix ou au stick, filtres avec LB/RB. Fonctionne aussi au clavier.
 - **Recherche instantanée** (nom ou tag) et **tri** par nom, dernier lancement, date d'ajout ou temps de jeu.
 - **7 thèmes de couleurs** (Omni, OLED noir, Nord, Dracula, Catppuccin, Synthwave, Clair), **couleur d'accent libre** et **taille des tuiles réglable**.
+- **Vérification des mises à jour** : le launcher signale une nouvelle version publiée sur GitHub. Il ne télécharge et n'installe rien de lui-même, et l'option peut être désactivée.
 - **Sauvegardes** : une copie automatique par jour (10 conservées), restauration en un clic, export et import de la bibliothèque.
-- **Menu contextuel** (clic droit) : favori, tags, renommer, icône personnalisée, arguments de lancement, ouvrir l'emplacement, retirer, supprimer du disque.
+- **Menu contextuel** (clic droit) : favori, tags, statut et notes, renommer, icône personnalisée, jaquette et bannière, arguments de lancement, ouvrir l'emplacement, retirer, supprimer du disque.
 - **Jeux introuvables signalés**, avec choix de les relocaliser ou de les retirer.
 - **Suppression sécurisée** : le dossier du jeu part à la corbeille (récupérable), avec des garde-fous.
 - **Option « fermer à la fin de la partie »**, et mémorisation de la taille et de la position de la fenêtre.
@@ -79,14 +84,19 @@ Le fichier `omni_launcher.ico` à la racine du projet est automatiquement intég
 | Lancer un jeu | Double-clic sur sa tuile |
 | Ouvrir le menu d'un jeu | Clic droit sur sa tuile |
 | Ajouter un jeu | Bouton **+ Ajouter un jeu**, ou glisser-déposer un `.exe` |
-| Importer un dossier de jeux | **Scanner un dossier**, ou glisser-déposer le dossier |
+| Importer un dossier de jeux | Bouton **Scanner**, ou glisser-déposer le dossier |
 | Ajouter les jeux installés depuis | **Paramètres** → **Re-scanner** |
 | Rechercher | `Ctrl+F` |
 | Lancer le premier résultat | `Entrée` dans la recherche |
 | Effacer la recherche | `Échap` |
 | Changer l'icône d'un jeu | Clic droit → *Modifier l'icône…* |
 | Ajouter des tags à un jeu | Clic droit → *Tags…* |
-| Filtrer par tag | Clic sur un tag sous l'en-tête |
+| Donner un statut ou écrire des notes | Clic droit → *Statut et notes…* |
+| Filtrer par statut ou par tag | Clic sur une étiquette sous l'en-tête |
+| Changer de vue | Menu à côté du tri : **Icônes**, **Jaquettes** ou **Liste** |
+| Choisir la jaquette et la bannière d'un jeu | Clic droit → *Jaquette et bannière…* |
+| Récupérer toutes les images manquantes | **Paramètres** → **Jaquettes et bannières** |
+| Vérifier les mises à jour | **Paramètres** → **Mises à jour** |
 | Voir les statistiques | Bouton **📊** |
 | Mode plein écran | `F11`, bouton **🎮**, ou **Start** sur la manette |
 | Changer de thème | **Paramètres** → **Apparence** |
@@ -103,6 +113,16 @@ Le fichier `omni_launcher.ico` à la racine du projet est automatiquement intég
 | Favori | Y | `F` |
 | Filtre précédent / suivant | LB / RB | `Q` / `E` |
 | Quitter le plein écran | B ou Start | `Échap` ou `F11` |
+
+### Jaquettes et bannières
+
+Pour les télécharger, créez un compte sur [SteamGridDB](https://www.steamgriddb.com), récupérez votre [clé d'API](https://www.steamgriddb.com/profile/preferences/api) et collez-la dans **Paramètres** → **Jaquettes et bannières**. Sans clé, vous pouvez toujours choisir vos propres images (PNG, JPG ou WebP).
+
+La récupération groupée prend le premier résultat de chaque jeu. Si une image ne correspond pas, corrigez-la par clic droit → *Jaquette et bannière…*, où vous choisissez vous-même le bon jeu.
+
+La clé est enregistrée en clair dans `donnees\cle_steamgriddb.txt`, hors de `config.json` : elle ne figure ni dans les sauvegardes ni dans les exports. Pensez-y si vous copiez ce dossier, par exemple sur une clé USB partagée.
+
+En mode plein écran, les tuiles passent au format portrait dès qu'un jeu a une jaquette, et la bannière du jeu sélectionné s'affiche en bas.
 
 ### Temps de jeu
 
@@ -121,7 +141,9 @@ Tout est rangé dans `donnees\` à côté de l'exécutable (mode portable), ou d
 ```
 donnees/
 ├── config.json       # Bibliothèque, temps de jeu et réglages (écrit de façon atomique)
+├── cle_steamgriddb.txt  # Clé d'API SteamGridDB, si vous en avez ajouté une
 ├── icones/           # Icônes personnalisées
+├── jaquettes/        # Jaquettes et bannières
 ├── sauvegardes/      # Copies quotidiennes de config.json (10 conservées)
 └── cache_icones/     # Icônes extraites des exécutables, en PNG
 ```
@@ -141,16 +163,22 @@ omni-launcher/
     ├── main.rs           # Point d'entrée, fenêtre
     ├── app.rs            # Interface : grille, menus, dialogues
     ├── app/
+    │   ├── liste.rs      # Vue liste, section « Joués récemment »
+    │   ├── mises_a_jour.rs # Affichage des mises à jour
     │   ├── parametres.rs # Vue Paramètres
     │   ├── statistiques.rs # Vue Statistiques
-    │   └── tv.rs         # Mode plein écran à la manette
+    │   ├── tv.rs         # Mode plein écran à la manette
+    │   └── visuels.rs    # Jaquettes et bannières
     ├── config.rs         # Configuration JSON persistante
     ├── sauvegarde.rs     # Copies quotidiennes, export, import
     ├── partie.rs         # Suivi des parties (temps de jeu)
+    ├── maj.rs            # Recherche de nouvelles versions sur GitHub
     ├── manette.rs        # Lecture de la manette (gilrs)
+    ├── reseau.rs         # Requêtes HTTP
+    ├── steamgriddb.rs    # API SteamGridDB, enregistrement des images
     ├── stats.rs          # Calculs de statistiques
     ├── scan.rs           # Scan de dossiers et détection de l'exe principal
-    ├── icons.rs          # Extraction, cache et chargement des icônes
+    ├── icons.rs          # Extraction, cache et chargement des images
     ├── platform.rs       # Appels Windows (lancement, icônes, processus, corbeille)
     └── theme.rs          # Thèmes de couleurs
 ```
@@ -180,4 +208,10 @@ La v1 (Python / Tkinter) reste disponible via le tag [`v1.1.0`](https://github.c
 cargo test
 ```
 
-Les tests couvrent la configuration (aller-retour JSON, fichier corrompu, migration depuis la v2, tags, fusion), les sauvegardes, le suivi des parties, la manette (seuils du stick, répétition), la navigation du mode plein écran, les statistiques, les thèmes, le scan (filtrage, choix de l'exe principal, bibliothèque Steam) et le traitement des icônes.
+Les tests couvrent la configuration (aller-retour JSON, fichier corrompu, migration depuis les anciennes versions, tags, statuts, jeux récents, fusion), les sauvegardes, le suivi des parties, la manette (seuils du stick, répétition), la navigation du mode plein écran, les statistiques, les thèmes, le scan (filtrage, choix de l'exe principal, bibliothèque Steam), le traitement des images, l'analyse des réponses SteamGridDB et GitHub, et la comparaison des versions.
+
+Deux tests interrogent les vrais services et sont ignorés par défaut :
+
+```powershell
+cargo test -- --ignored
+```

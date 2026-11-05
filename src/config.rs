@@ -41,6 +41,48 @@ pub struct Jeu {
     pub sessions: Vec<Session>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub statut: Statut,
+    /// Notes libres de l'utilisateur.
+    #[serde(default)]
+    pub notes: String,
+    /// Nom du fichier de jaquette (portrait) dans le dossier `jaquettes/`.
+    #[serde(default)]
+    pub jaquette: Option<String>,
+    /// Nom du fichier de bannière (large) dans le dossier `jaquettes/`.
+    #[serde(default)]
+    pub banniere: Option<String>,
+}
+
+/// Où en est l'utilisateur avec un jeu.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum Statut {
+    #[default]
+    Aucun,
+    AJouer,
+    EnCours,
+    Termine,
+    Abandonne,
+}
+
+impl Statut {
+    pub const TOUS: [Statut; 5] = [
+        Statut::Aucun,
+        Statut::AJouer,
+        Statut::EnCours,
+        Statut::Termine,
+        Statut::Abandonne,
+    ];
+
+    pub fn libelle(self) -> &'static str {
+        match self {
+            Statut::Aucun => "Aucun statut",
+            Statut::AJouer => "À jouer",
+            Statut::EnCours => "En cours",
+            Statut::Termine => "Terminé",
+            Statut::Abandonne => "Abandonné",
+        }
+    }
 }
 
 /// Une partie mesurée : début (horodatage Unix) et durée en secondes.
@@ -69,6 +111,10 @@ impl Jeu {
             nb_lancements: 0,
             sessions: Vec::new(),
             tags: Vec::new(),
+            statut: Statut::Aucun,
+            notes: String::new(),
+            jaquette: None,
+            banniere: None,
         }
     }
 
@@ -123,7 +169,16 @@ pub enum Tri {
     TempsDeJeu,
 }
 
-pub const VERSION_CONFIG: u32 = 3;
+/// Présentation de la bibliothèque.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum Affichage {
+    #[default]
+    Grille,
+    Jaquettes,
+    Liste,
+}
+
+pub const VERSION_CONFIG: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -133,6 +188,11 @@ pub struct Config {
     /// À la fin d'une partie : fermer le launcher (sinon il réapparaît).
     pub fermer_apres_lancement: bool,
     pub tri: Tri,
+    pub affichage: Affichage,
+    /// Affiche la section « Joués récemment » en tête de la bibliothèque.
+    pub afficher_recents: bool,
+    /// Cherche une nouvelle version sur GitHub au démarrage.
+    pub verifier_maj: bool,
     pub dernier_dossier_scan: Option<PathBuf>,
     pub theme: Theme,
     /// Couleur d'accent choisie par l'utilisateur, à la place de celle du thème.
@@ -160,6 +220,9 @@ impl Default for Config {
             taille_tuile: 140.0,
             fermer_apres_lancement: true,
             tri: Tri::Nom,
+            affichage: Affichage::Grille,
+            afficher_recents: true,
+            verifier_maj: true,
             dernier_dossier_scan: None,
             theme: Theme::Omni,
             accent_perso: None,
@@ -193,6 +256,15 @@ impl Config {
         // Sécurité si le fichier a été édité à la main.
         let max_id = config.jeux.iter().map(|j| j.id).max().unwrap_or(0);
         config.prochain_id = config.prochain_id.max(max_id + 1);
+        // Un fichier importé ne doit pas pouvoir désigner un fichier ailleurs
+        // sur le disque : ces noms servent aussi à supprimer des images.
+        for j in &mut config.jeux {
+            for nom in [&mut j.icone_perso, &mut j.jaquette, &mut j.banniere] {
+                if nom.as_deref().is_some_and(|n| !nom_de_fichier_simple(n)) {
+                    *nom = None;
+                }
+            }
+        }
         Ok(config)
     }
 
@@ -222,6 +294,27 @@ impl Config {
         }
         tags.sort_by_key(|(n, _)| n.to_lowercase());
         tags
+    }
+
+    /// Statuts utilisés (sauf « aucun »), avec le nombre de jeux de chacun.
+    pub fn statuts(&self) -> Vec<(Statut, usize)> {
+        Statut::TOUS
+            .into_iter()
+            .filter(|s| *s != Statut::Aucun)
+            .map(|s| (s, self.jeux.iter().filter(|j| j.statut == s).count()))
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
+    /// Les `max` derniers jeux lancés, du plus récent au plus ancien.
+    pub fn recents(&self, max: usize) -> Vec<u64> {
+        let mut lances: Vec<(u64, u64)> = self
+            .jeux
+            .iter()
+            .filter_map(|j| j.dernier_lancement.map(|t| (t, j.id)))
+            .collect();
+        lances.sort_by(|a, b| b.cmp(a));
+        lances.into_iter().take(max).map(|(_, id)| id).collect()
     }
 
     pub fn renommer_tag(&mut self, ancien: &str, nouveau: &str) {
@@ -272,6 +365,11 @@ impl Config {
     }
 }
 
+/// `true` pour un simple nom de fichier, sans dossier ni lecteur.
+fn nom_de_fichier_simple(nom: &str) -> bool {
+    !nom.is_empty() && nom != ".." && nom != "." && !nom.contains(['/', '\\', ':'])
+}
+
 /// Clé de comparaison de chemins insensible à la casse et aux séparateurs,
 /// comme le système de fichiers Windows.
 pub fn cle_chemin(p: &Path) -> String {
@@ -293,6 +391,10 @@ pub struct Dossiers {
     pub icones: PathBuf,
     pub cache: PathBuf,
     pub sauvegardes: PathBuf,
+    pub jaquettes: PathBuf,
+    /// Clé SteamGridDB, hors de `config.json` pour ne se retrouver ni dans
+    /// les sauvegardes ni dans les exports.
+    pub cle_api: PathBuf,
 }
 
 impl Dossiers {
@@ -321,11 +423,14 @@ impl Dossiers {
             icones: racine.join("icones"),
             cache: racine.join("cache_icones"),
             sauvegardes: racine.join("sauvegardes"),
+            jaquettes: racine.join("jaquettes"),
+            cle_api: racine.join("cle_steamgriddb.txt"),
             racine,
         };
         let _ = fs::create_dir_all(&d.icones);
         let _ = fs::create_dir_all(&d.cache);
         let _ = fs::create_dir_all(&d.sauvegardes);
+        let _ = fs::create_dir_all(&d.jaquettes);
         d
     }
 }
@@ -384,6 +489,70 @@ mod tests {
         assert_eq!(c.theme, Theme::Omni);
         assert_eq!(c.jeux[0].temps_jeu, 0);
         assert!(c.jeux[0].tags.is_empty());
+    }
+
+    #[test]
+    fn config_v3_se_charge() {
+        let v3 = r#"{"version":3,"taille_tuile":140.0,"tri":"Nom","prochain_id":2,
+            "jeux":[{"id":1,"nom":"Ancien","exe":"C:/Jeux/a.exe","tags":["Coop"]}]}"#;
+        let c = Config::depuis_json(v3).unwrap();
+        assert_eq!(c.version, VERSION_CONFIG);
+        assert_eq!(c.affichage, Affichage::Grille);
+        assert!(c.afficher_recents);
+        assert!(c.verifier_maj);
+        assert_eq!(c.jeux[0].statut, Statut::Aucun);
+        assert!(c.jeux[0].notes.is_empty());
+        assert!(c.jeux[0].jaquette.is_none());
+    }
+
+    #[test]
+    fn un_nom_d_image_hors_du_dossier_est_oublie() {
+        let json = r#"{"prochain_id":5,"jeux":[
+            {"id":1,"nom":"A","exe":"C:/a.exe","jaquette":"C:\\Users\\moi\\doc.png"},
+            {"id":2,"nom":"B","exe":"C:/b.exe","banniere":"..\\..\\config.json"},
+            {"id":3,"nom":"C","exe":"C:/c.exe","icone_perso":"../secret.png"},
+            {"id":4,"nom":"D","exe":"C:/d.exe","jaquette":"4_jaquette_1.png"}]}"#;
+        let c = Config::depuis_json(json).unwrap();
+        assert_eq!(c.jeux[0].jaquette, None);
+        assert_eq!(c.jeux[1].banniere, None);
+        assert_eq!(c.jeux[2].icone_perso, None);
+        assert_eq!(c.jeux[3].jaquette.as_deref(), Some("4_jaquette_1.png"));
+    }
+
+    #[test]
+    fn statut_et_notes_survivent_a_l_aller_retour() {
+        let mut c = Config::default();
+        c.jeux.push(Jeu::nouveau(1, "A".into(), PathBuf::from("C:/a.exe"), None));
+        c.jeux[0].statut = Statut::Termine;
+        c.jeux[0].notes = "Fin secrète à faire".into();
+        let relu = Config::depuis_json(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(relu.jeux, c.jeux);
+    }
+
+    #[test]
+    fn statuts_utilises_avec_leur_compte() {
+        let mut c = Config::default();
+        for (i, s) in [Statut::Termine, Statut::Aucun, Statut::Termine, Statut::AJouer]
+            .into_iter()
+            .enumerate()
+        {
+            let chemin = PathBuf::from(format!("C:/{i}.exe"));
+            c.jeux.push(Jeu::nouveau(i as u64, "J".into(), chemin, None));
+            c.jeux[i].statut = s;
+        }
+        assert_eq!(c.statuts(), vec![(Statut::AJouer, 1), (Statut::Termine, 2)]);
+    }
+
+    #[test]
+    fn recents_tries_et_limites() {
+        let mut c = Config::default();
+        for (i, t) in [Some(10), None, Some(30), Some(20)].into_iter().enumerate() {
+            let chemin = PathBuf::from(format!("C:/{i}.exe"));
+            c.jeux.push(Jeu::nouveau(i as u64, "J".into(), chemin, None));
+            c.jeux[i].dernier_lancement = t;
+        }
+        assert_eq!(c.recents(2), vec![2, 3]);
+        assert_eq!(c.recents(10), vec![2, 3, 0], "jamais lancé : exclu");
     }
 
     #[test]

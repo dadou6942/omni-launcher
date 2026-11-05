@@ -1,4 +1,5 @@
-//! Vue Paramètres : affichage, apparence, bibliothèque, tags, sauvegardes.
+//! Vue Paramètres : affichage, apparence, bibliothèque, images, tags,
+//! sauvegardes, mises à jour.
 
 use super::*;
 
@@ -26,6 +27,12 @@ impl App {
                             self.sauvegarde_differee = true;
                         }
                     });
+                    if ui
+                        .checkbox(&mut self.config.afficher_recents, "Afficher la section « Joués récemment »")
+                        .changed()
+                    {
+                        self.sauver();
+                    }
                     if ui
                         .checkbox(
                             &mut self.config.fermer_apres_lancement,
@@ -85,9 +92,13 @@ impl App {
                     });
                 });
 
+                carte(ui, "Jaquettes et bannières", |ui| self.carte_visuels(ui, &ctx));
+
                 carte(ui, "Tags", |ui| self.carte_tags(ui));
 
                 carte(ui, "Sauvegardes", |ui| self.carte_sauvegardes(ui));
+
+                carte(ui, "Mises à jour", |ui| self.carte_maj(ui, &ctx));
 
                 carte(ui, "Données", |ui| {
                     ui.label(RichText::new("Configuration, icônes personnalisées, sauvegardes et cache :").color(p.fg_muted));
@@ -108,6 +119,7 @@ impl App {
                 carte(ui, "Astuces", |ui| {
                     for astuce in [
                         "Double-clic sur un jeu pour le lancer, clic droit pour les options.",
+                        "Le menu à côté du tri passe des icônes aux jaquettes ou à la liste.",
                         "Ctrl+F pour rechercher (nom ou tag), Entrée lance le premier résultat, Échap efface.",
                         "F11 ou le bouton Start de la manette ouvre le mode plein écran.",
                         "Glissez-déposez des .exe ou un dossier de jeux directement dans la fenêtre.",

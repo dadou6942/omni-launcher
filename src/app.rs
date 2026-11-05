@@ -2,19 +2,24 @@
 //! Les vues Paramètres, Statistiques et le mode plein écran sont dans les
 //! sous-modules.
 
+mod liste;
+mod mises_a_jour;
 mod parametres;
 mod statistiques;
 mod tv;
+mod visuels;
 
 use crate::config::{
-    Config, Dossiers, Jeu, TAILLE_TUILE_MAX, TAILLE_TUILE_MIN, Tri, cle_chemin, maintenant,
+    Affichage, Config, Dossiers, Jeu, Statut, TAILLE_TUILE_MAX, TAILLE_TUILE_MIN, Tri, cle_chemin,
+    maintenant,
 };
-use crate::icons::{self, ChargeurIcones};
+use crate::icons::{self, ChargeurIcones, Genre};
 use crate::manette::{self, Commande, MsgManette};
 use crate::partie::{self, MsgPartie};
 use crate::sauvegarde::{self, InfoSauvegarde};
 use crate::scan::{self, Candidat};
 use crate::stats;
+use crate::steamgriddb;
 use crate::theme;
 use crate::platform;
 use eframe::egui::{
@@ -31,6 +36,10 @@ const DUREE_NOTIF: Duration = Duration::from_secs(4);
 /// Délai entre le lancement d'un jeu et la réduction du launcher, le temps
 /// de lire la notification.
 const DELAI_REDUCTION: Duration = Duration::from_millis(1200);
+/// Proportions d'une jaquette : 600x900.
+const RATIO_JAQUETTE: f32 = 1.5;
+/// Longueur de l'aperçu des notes dans les infobulles.
+const APERCU_NOTES_MAX: usize = 90;
 
 /// Action différée exécutée après la fermeture d'une boîte de dialogue.
 type ActionDialogue = Box<dyn FnOnce(&mut App, &egui::Context)>;
@@ -52,6 +61,8 @@ enum Action {
     OuvrirEmplacement(u64),
     EditerArguments(u64),
     EditerTags(u64),
+    EditerNotes(u64),
+    EditerVisuels(u64),
     DemanderRetrait(u64),
     DemanderSuppression(u64),
 }
@@ -64,6 +75,7 @@ enum Dialogue {
     RetirerIntrouvables,
     Arguments { id: u64, texte: String },
     Tags { id: u64, saisie: String },
+    Notes { id: u64, statut: Statut, texte: String },
     RenommerTag { ancien: String, texte: String },
     SupprimerTag(String),
     Restaurer(InfoSauvegarde),
@@ -120,6 +132,7 @@ pub struct App {
     recherche: String,
     focus_recherche: bool,
     filtre_tag: Option<String>,
+    filtre_statut: Option<Statut>,
     renommage: Option<Renommage>,
     dialogue: Option<Dialogue>,
     scan: Option<ScanEnCours>,
@@ -137,6 +150,10 @@ pub struct App {
     commandes: Vec<Commande>,
     mode_tv: bool,
     tv: tv::EtatTv,
+    cle_sgdb: String,
+    edition_visuels: Option<visuels::EditionVisuels>,
+    lot_visuels: Option<visuels::LotVisuels>,
+    maj: mises_a_jour::EtatMaj,
 }
 
 impl App {
@@ -150,6 +167,7 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
 
         let icones = ChargeurIcones::nouveau(ctx, &dossiers);
+        let cle_sgdb = steamgriddb::lire_cle(&dossiers);
         let mut app = Self {
             dossiers,
             config,
@@ -158,6 +176,7 @@ impl App {
             recherche: String::new(),
             focus_recherche: false,
             filtre_tag: None,
+            filtre_statut: None,
             renommage: None,
             dialogue: None,
             scan: None,
@@ -174,8 +193,15 @@ impl App {
             commandes: Vec::new(),
             mode_tv: false,
             tv: tv::EtatTv::default(),
+            cle_sgdb,
+            edition_visuels: None,
+            lot_visuels: None,
+            maj: mises_a_jour::EtatMaj::Inconnu,
         };
         app.verifier_manquants();
+        if app.config.verifier_maj {
+            app.chercher_maj(ctx, false);
+        }
         app
     }
 
@@ -224,9 +250,14 @@ impl App {
         theme::appliquer(ctx, self.config.theme, self.config.accent_perso);
     }
 
-    /// Jeux filtrés (recherche sur le nom et les tags, filtre de tag) et triés,
-    /// séparés en (favoris, autres).
-    fn trier_filtrer(&self, recherche: &str, tag: Option<&str>) -> (Vec<u64>, Vec<u64>) {
+    /// Jeux filtrés (recherche sur le nom et les tags, filtres de tag et de
+    /// statut) et triés, séparés en (favoris, autres).
+    fn trier_filtrer(
+        &self,
+        recherche: &str,
+        tag: Option<&str>,
+        statut: Option<Statut>,
+    ) -> (Vec<u64>, Vec<u64>) {
         let termes: Vec<String> = recherche
             .split_whitespace()
             .map(|t| t.to_lowercase())
@@ -237,6 +268,7 @@ impl App {
             .jeux
             .iter()
             .filter(|j| tag.is_none_or(|t| j.a_tag(t)))
+            .filter(|j| statut.is_none_or(|s| j.statut == s))
             .filter(|j| {
                 let nom = j.nom.to_lowercase();
                 termes.iter().all(|t| {
@@ -271,7 +303,7 @@ impl App {
     }
 
     fn listes_visibles(&self) -> (Vec<u64>, Vec<u64>) {
-        self.trier_filtrer(&self.recherche, self.filtre_tag.as_deref())
+        self.trier_filtrer(&self.recherche, self.filtre_tag.as_deref(), self.filtre_statut)
     }
 
     // ------------------------------------------------------------------
@@ -493,6 +525,16 @@ impl App {
                     saisie: String::new(),
                 });
             }
+            Action::EditerNotes(id) => {
+                if let Some(j) = self.jeu(id) {
+                    self.dialogue = Some(Dialogue::Notes {
+                        id,
+                        statut: j.statut,
+                        texte: j.notes.clone(),
+                    });
+                }
+            }
+            Action::EditerVisuels(id) => self.ouvrir_visuels(id),
             Action::DemanderRetrait(id) => self.dialogue = Some(Dialogue::Retirer(id)),
             Action::DemanderSuppression(id) => {
                 let Some(jeu) = self.jeu(id) else { return };
@@ -653,6 +695,9 @@ impl App {
             if let Some(nom) = jeu.icone_perso {
                 let _ = std::fs::remove_file(self.dossiers.icones.join(nom));
             }
+            for nom in [jeu.jaquette, jeu.banniere].into_iter().flatten() {
+                let _ = std::fs::remove_file(self.dossiers.jaquettes.join(nom));
+            }
             self.icones.invalider(id);
             self.manquants.remove(&id);
             self.sauver();
@@ -799,9 +844,16 @@ impl App {
             {
                 j.icone_perso = None;
             }
+            let dossier = &self.dossiers.jaquettes;
+            for image in [&mut j.jaquette, &mut j.banniere] {
+                if image.as_ref().is_some_and(|n| !dossier.join(n).is_file()) {
+                    *image = None;
+                }
+            }
         }
         self.config = nouvelle;
         self.filtre_tag = None;
+        self.filtre_statut = None;
         self.renommage = None;
         self.icones.tout_invalider();
         self.verifier_manquants();
@@ -962,6 +1014,7 @@ impl App {
                         self.rafraichir_sauvegardes();
                         self.vue = Vue::Parametres;
                     }
+                    self.bouton_maj(ui);
                     if ui
                         .button("📊")
                         .on_hover_text("Statistiques de jeu")
@@ -978,7 +1031,7 @@ impl App {
                     }
                     let scan_btn = ui.add_enabled(
                         self.scan.is_none(),
-                        egui::Button::new("🗁  Scanner un dossier"),
+                        egui::Button::new("🗁  Scanner"),
                     );
                     if scan_btn
                         .on_hover_text("Ajoute automatiquement tous les jeux d'un dossier")
@@ -999,6 +1052,25 @@ impl App {
                     }
 
                     ui.add_space(8.0);
+                    egui::ComboBox::from_id_salt("affichage")
+                        .selected_text(match self.config.affichage {
+                            Affichage::Grille => "Icônes",
+                            Affichage::Jaquettes => "Jaquettes",
+                            Affichage::Liste => "Liste",
+                        })
+                        .show_ui(ui, |ui| {
+                            let avant = self.config.affichage;
+                            ui.selectable_value(&mut self.config.affichage, Affichage::Grille, "Icônes");
+                            ui.selectable_value(
+                                &mut self.config.affichage,
+                                Affichage::Jaquettes,
+                                "Jaquettes",
+                            );
+                            ui.selectable_value(&mut self.config.affichage, Affichage::Liste, "Liste");
+                            if avant != self.config.affichage {
+                                self.sauver();
+                            }
+                        });
                     egui::ComboBox::from_id_salt("tri")
                         .selected_text(match self.config.tri {
                             Tri::Nom => "Tri : nom",
@@ -1059,10 +1131,17 @@ impl App {
         ui.add_space(10.0);
     }
 
-    /// Rangée de filtres par tag, sous l'en-tête.
-    fn filtres_tags(&mut self, ui: &mut egui::Ui) {
+    /// Rangée de filtres par statut et par tag, sous l'en-tête.
+    fn filtres(&mut self, ui: &mut egui::Ui) {
         let tags = self.config.tags();
-        if tags.is_empty() {
+        let statuts = self.config.statuts();
+        if self
+            .filtre_statut
+            .is_some_and(|f| !statuts.iter().any(|(s, _)| *s == f))
+        {
+            self.filtre_statut = None;
+        }
+        if tags.is_empty() && statuts.is_empty() {
             self.filtre_tag = None;
             return;
         }
@@ -1075,8 +1154,16 @@ impl App {
         }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            if puce(ui, "Tous", self.filtre_tag.is_none()).clicked() {
+            let aucun = self.filtre_tag.is_none() && self.filtre_statut.is_none();
+            if puce(ui, "Tous", aucun).clicked() {
                 self.filtre_tag = None;
+                self.filtre_statut = None;
+            }
+            for (statut, n) in statuts {
+                let actif = self.filtre_statut == Some(statut);
+                if puce(ui, &format!("{}  {n}", statut.libelle()), actif).clicked() {
+                    self.filtre_statut = if actif { None } else { Some(statut) };
+                }
             }
             for (tag, n) in tags {
                 let actif = self
@@ -1122,18 +1209,24 @@ impl App {
         }
 
         let (favoris, autres) = self.listes_visibles();
-        let filtre_actif = !self.recherche.trim().is_empty() || self.filtre_tag.is_some();
+        let filtre_actif = !self.recherche.trim().is_empty()
+            || self.filtre_tag.is_some()
+            || self.filtre_statut.is_some();
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(4.0);
             egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 0)).show(ui, |ui| {
-                self.filtres_tags(ui);
+                self.filtres(ui);
+
+                if !filtre_actif && self.config.afficher_recents {
+                    self.recents(ui, actions);
+                }
 
                 if filtre_actif && favoris.is_empty() && autres.is_empty() {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         let texte = if self.recherche.trim().is_empty() {
-                            "Aucun jeu avec ce tag.".to_string()
+                            "Aucun jeu avec ce filtre.".to_string()
                         } else {
                             format!("Aucun jeu ne correspond à « {} ».", self.recherche.trim())
                         };
@@ -1152,28 +1245,41 @@ impl App {
                         );
                         ui.add_space(16.0);
                     } else {
-                        self.grille(ui, &favoris, actions);
+                        self.afficher_jeux(ui, &favoris, actions);
                     }
                 }
 
                 if !autres.is_empty() {
                     ui.add_space(12.0);
-                    let titre = match (&self.filtre_tag, self.recherche.trim().is_empty()) {
-                        (_, false) => "Résultats".to_string(),
-                        (Some(t), true) => t.clone(),
-                        (None, true) => "Autres jeux".to_string(),
+                    let recherche = !self.recherche.trim().is_empty();
+                    let titre = match (&self.filtre_tag, self.filtre_statut) {
+                        _ if recherche => "Résultats".to_string(),
+                        (Some(t), _) => t.clone(),
+                        (None, Some(s)) => s.libelle().to_string(),
+                        (None, None) => "Autres jeux".to_string(),
                     };
                     titre_section(ui, &titre);
-                    self.grille(ui, &autres, actions);
+                    self.afficher_jeux(ui, &autres, actions);
                 }
                 ui.add_space(24.0);
             });
         });
     }
 
+    fn afficher_jeux(&mut self, ui: &mut egui::Ui, ids: &[u64], actions: &mut Vec<Action>) {
+        match self.config.affichage {
+            Affichage::Grille | Affichage::Jaquettes => self.grille(ui, ids, actions),
+            Affichage::Liste => self.liste(ui, ids, actions),
+        }
+    }
+
     fn grille(&mut self, ui: &mut egui::Ui, ids: &[u64], actions: &mut Vec<Action>) {
         let cote = self.config.taille_tuile;
-        let taille = Vec2::new(cote + 24.0, cote + 56.0);
+        let hauteur = match self.config.affichage {
+            Affichage::Jaquettes => cote * RATIO_JAQUETTE,
+            Affichage::Grille | Affichage::Liste => cote,
+        };
+        let taille = Vec2::new(cote + 24.0, hauteur + 56.0);
         let ecart = 14.0;
         let colonnes =
             (((ui.available_width() + ecart) / (taille.x + ecart)).floor() as usize).max(1);
@@ -1229,7 +1335,7 @@ impl App {
                 );
             }
         }
-        if manquant {
+        if manquant && cote >= TAILLE_TUILE_MIN {
             peintre.text(
                 zone.center_bottom() - Vec2::new(0.0, 8.0),
                 Align2::CENTER_BOTTOM,
@@ -1237,6 +1343,74 @@ impl App {
                 FontId::new(13.0, theme::gras()),
                 p.danger,
             );
+        }
+    }
+
+    /// Dessine la jaquette d'un jeu, ou à défaut son icône sur une carte.
+    fn dessiner_jaquette(&mut self, ui: &egui::Ui, jeu: &Jeu, zone: egui::Rect, manquant: bool) {
+        let p = theme::p();
+        let arrondi = CornerRadius::same(8);
+        let texture = jeu
+            .jaquette
+            .as_deref()
+            .and_then(|f| self.icones.visuel(jeu.id, Genre::Jaquette, f));
+        match texture {
+            Some(t) => {
+                let uv = icons::uv_couvrir(t.size_vec2(), zone.size());
+                let mut img = egui::Image::new(&t).uv(uv).corner_radius(arrondi);
+                if manquant {
+                    img = img.tint(Color32::from_gray(90));
+                }
+                img.paint_at(ui, zone);
+                if manquant {
+                    ui.painter().text(
+                        zone.center_bottom() - Vec2::new(0.0, 8.0),
+                        Align2::CENTER_BOTTOM,
+                        "Introuvable",
+                        FontId::new(13.0, theme::gras()),
+                        p.danger,
+                    );
+                }
+            }
+            None => {
+                ui.painter().rect_filled(zone, arrondi, p.bg_btn);
+                let icone = egui::Rect::from_center_size(zone.center(), Vec2::splat(zone.width() * 0.62));
+                self.dessiner_icone(ui, jeu, icone, manquant);
+            }
+        }
+    }
+
+    /// Champ de saisie du renommage en cours.
+    fn champ_renommage(
+        &mut self,
+        ui: &mut egui::Ui,
+        zone: egui::Rect,
+        alignement: Align2,
+        actions: &mut Vec<Action>,
+    ) {
+        let Some(r) = self.renommage.as_mut() else {
+            return;
+        };
+        let id = r.id;
+        let edit = ui.put(
+            zone,
+            egui::TextEdit::singleline(&mut r.texte)
+                .align(alignement)
+                .font(FontId::new(14.0, theme::gras())),
+        );
+        if r.premiere_frame {
+            edit.request_focus();
+            if let Some(mut etat) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
+                etat.cursor
+                    .set_char_range(Some(egui::text::CCursorRange::select_all_str(&r.texte)));
+                etat.store(ui.ctx(), edit.id);
+            }
+            r.premiere_frame = false;
+        } else if edit.lost_focus() {
+            if ui.input(|i| i.key_pressed(Key::Enter)) {
+                actions.push(Action::Renommer(id, r.texte.clone()));
+            }
+            self.renommage = None;
         }
     }
 
@@ -1259,9 +1433,16 @@ impl App {
             peintre.rect_filled(rect, CornerRadius::same(10), p.bg_tuile_hover);
         }
 
-        let zone_icone =
-            egui::Rect::from_min_size(rect.min + Vec2::new(12.0, 10.0), Vec2::splat(cote));
-        self.dessiner_icone(ui, &jeu, zone_icone, manquant);
+        let zone_icone = egui::Rect::from_min_size(
+            rect.min + Vec2::new(12.0, 10.0),
+            Vec2::new(cote, taille.y - 56.0),
+        );
+        if self.config.affichage == Affichage::Jaquettes {
+            self.dessiner_jaquette(ui, &jeu, zone_icone, manquant);
+        } else {
+            self.dessiner_icone(ui, &jeu, zone_icone, manquant);
+        }
+        marquer_statut(&peintre, zone_icone.left_top() + Vec2::splat(10.0), jeu.statut);
 
         // Nom (ou champ de renommage)
         let zone_nom = egui::Rect::from_min_max(
@@ -1271,27 +1452,8 @@ impl App {
 
         let en_renommage = self.renommage.as_ref().is_some_and(|r| r.id == id);
         if en_renommage {
-            let r = self.renommage.as_mut().unwrap();
-            let edit = ui.put(
-                egui::Rect::from_min_size(zone_nom.min, Vec2::new(zone_nom.width(), 28.0)),
-                egui::TextEdit::singleline(&mut r.texte)
-                    .align(Align2::CENTER_CENTER)
-                    .font(FontId::new(14.0, theme::gras())),
-            );
-            if r.premiere_frame {
-                edit.request_focus();
-                if let Some(mut etat) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
-                    etat.cursor
-                        .set_char_range(Some(egui::text::CCursorRange::select_all_str(&r.texte)));
-                    etat.store(ui.ctx(), edit.id);
-                }
-                r.premiere_frame = false;
-            } else if edit.lost_focus() {
-                if ui.input(|i| i.key_pressed(Key::Enter)) {
-                    actions.push(Action::Renommer(id, r.texte.clone()));
-                }
-                self.renommage = None;
-            }
+            let zone = egui::Rect::from_min_size(zone_nom.min, Vec2::new(zone_nom.width(), 28.0));
+            self.champ_renommage(ui, zone, Align2::CENTER_CENTER, actions);
         } else {
             let mut job = egui::text::LayoutJob::simple(
                 jeu.nom.clone(),
@@ -1307,91 +1469,15 @@ impl App {
             peintre.galley(egui::pos2(zone_nom.center().x, zone_nom.top()), galley, p.fg);
         }
 
-        // Interactions
-        if reponse.double_clicked() {
-            actions.push(Action::Lancer(id));
-        }
-        let reponse = reponse.on_hover_cursor(egui::CursorIcon::PointingHand);
-        let reponse = if survol && !reponse.context_menu_opened() {
-            reponse.on_hover_ui_at_pointer(|ui| {
-                ui.label(RichText::new(resume_jeu(&jeu)).small());
-                if !jeu.tags.is_empty() {
-                    ui.label(RichText::new(format!("🏷 {}", jeu.tags.join(", "))).small());
-                }
-                ui.label(
-                    RichText::new(jeu.exe.display().to_string())
-                        .small()
-                        .color(p.fg_muted),
-                );
-            })
-        } else {
-            reponse
-        };
-
-        reponse.context_menu(|ui| {
-            ui.set_min_width(230.0);
-            ui.label(RichText::new(&jeu.nom).strong().color(p.accent));
-            ui.label(RichText::new(resume_jeu(&jeu)).small().color(p.fg_muted));
-            ui.separator();
-            if ui.button("▶  Lancer").clicked() {
-                actions.push(Action::Lancer(id));
-                ui.close();
-            }
-            if ui.button("🗁  Ouvrir l'emplacement").clicked() {
-                actions.push(Action::OuvrirEmplacement(id));
-                ui.close();
-            }
-            ui.separator();
-            let fav = if jeu.favori {
-                "☆  Retirer des favoris"
-            } else {
-                "⭐  Ajouter aux favoris"
-            };
-            if ui.button(fav).clicked() {
-                actions.push(Action::BasculerFavori(id));
-                ui.close();
-            }
-            if ui.button("🏷  Tags…").clicked() {
-                actions.push(Action::EditerTags(id));
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("✏  Renommer").clicked() {
-                actions.push(Action::DebuterRenommage(id));
-                ui.close();
-            }
-            if ui.button("🖼  Modifier l'icône…").clicked() {
-                actions.push(Action::ChangerIcone(id));
-                ui.close();
-            }
-            if jeu.icone_perso.is_some() && ui.button("↺  Rétablir l'icône d'origine").clicked()
-            {
-                actions.push(Action::RetablirIcone(id));
-                ui.close();
-            }
-            if ui.button("⚙  Arguments de lancement…").clicked() {
-                actions.push(Action::EditerArguments(id));
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("➖  Retirer du launcher").clicked() {
-                actions.push(Action::DemanderRetrait(id));
-                ui.close();
-            }
-            if ui
-                .button(RichText::new("🗑  Supprimer le jeu du disque…").color(p.danger))
-                .clicked()
-            {
-                actions.push(Action::DemanderSuppression(id));
-                ui.close();
-            }
-        });
+        interactions_jeu(reponse, &jeu, actions);
     }
 
     fn fenetres(&mut self, ctx: &egui::Context) {
         self.fenetre_scan(ctx);
         self.fenetre_revue(ctx);
         self.fenetre_dialogue(ctx);
+        self.fenetre_visuels(ctx);
+        self.fenetre_lot(ctx);
     }
 
     fn fenetre_scan(&mut self, ctx: &egui::Context) {
@@ -1802,6 +1888,43 @@ impl App {
                         fermer = true;
                     }
                 }
+                Dialogue::Notes { id, statut, texte } => {
+                    let id = *id;
+                    ui.heading("Statut et notes");
+                    ui.label(RichText::new(format!("Pour « {} »", nom(&id, jeux))).color(p.fg_muted));
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        for s in Statut::TOUS {
+                            if puce(ui, s.libelle(), *statut == s).clicked() {
+                                *statut = s;
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::TextEdit::multiline(texte)
+                            .hint_text("Vos notes : codes, mods, où vous en êtes…")
+                            .desired_width(440.0)
+                            .desired_rows(6),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Enregistrer").clicked() {
+                            let (s, t) = (*statut, texte.trim().to_string());
+                            action = Some(Box::new(move |app, _| {
+                                if let Some(j) = app.config.jeu_mut(id) {
+                                    j.statut = s;
+                                    j.notes = t;
+                                }
+                                app.sauver();
+                            }));
+                        }
+                        if ui.button("Annuler").clicked() {
+                            fermer = true;
+                        }
+                    });
+                }
                 Dialogue::RenommerTag { ancien, texte } => {
                     ui.heading("Renommer le tag");
                     ui.label(
@@ -2009,6 +2132,145 @@ fn resume_jeu(jeu: &Jeu) -> String {
     parties.join(" · ")
 }
 
+fn couleur_statut(statut: Statut) -> Color32 {
+    let p = theme::p();
+    match statut {
+        Statut::Aucun | Statut::AJouer => p.fg_muted,
+        Statut::EnCours => p.accent,
+        Statut::Termine => Color32::from_rgb(80, 190, 120),
+        Statut::Abandonne => p.danger,
+    }
+}
+
+/// Pastille de couleur sur une tuile, si le jeu a un statut.
+fn marquer_statut(peintre: &egui::Painter, centre: egui::Pos2, statut: Statut) {
+    if statut != Statut::Aucun {
+        let contour = Stroke::new(2.0, theme::p().bg_main);
+        peintre.circle(centre, 6.0, couleur_statut(statut), contour);
+    }
+}
+
+/// Couleur rendue partiellement transparente.
+fn voile(couleur: Color32, opacite: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(couleur.r(), couleur.g(), couleur.b(), opacite)
+}
+
+/// Les notes sur une seule ligne, coupées si elles sont longues.
+fn apercu_notes(notes: &str) -> String {
+    let ligne = notes.split_whitespace().collect::<Vec<_>>().join(" ");
+    if ligne.chars().count() <= APERCU_NOTES_MAX {
+        return ligne;
+    }
+    let debut: String = ligne.chars().take(APERCU_NOTES_MAX).collect();
+    format!("{}…", debut.trim_end())
+}
+
+fn infobulle_jeu(ui: &mut egui::Ui, jeu: &Jeu) {
+    let p = theme::p();
+    ui.label(RichText::new(resume_jeu(jeu)).small());
+    if jeu.statut != Statut::Aucun {
+        ui.label(
+            RichText::new(jeu.statut.libelle())
+                .small()
+                .color(couleur_statut(jeu.statut)),
+        );
+    }
+    if !jeu.tags.is_empty() {
+        ui.label(RichText::new(format!("🏷 {}", jeu.tags.join(", "))).small());
+    }
+    if !jeu.notes.is_empty() {
+        ui.label(RichText::new(format!("📝 {}", apercu_notes(&jeu.notes))).small());
+    }
+    ui.label(
+        RichText::new(jeu.exe.display().to_string())
+            .small()
+            .color(p.fg_muted),
+    );
+}
+
+fn menu_jeu(ui: &mut egui::Ui, jeu: &Jeu, actions: &mut Vec<Action>) {
+    let p = theme::p();
+    let id = jeu.id;
+    ui.set_min_width(230.0);
+    ui.label(RichText::new(&jeu.nom).strong().color(p.accent));
+    ui.label(RichText::new(resume_jeu(jeu)).small().color(p.fg_muted));
+    ui.separator();
+    if ui.button("▶  Lancer").clicked() {
+        actions.push(Action::Lancer(id));
+        ui.close();
+    }
+    if ui.button("🗁  Ouvrir l'emplacement").clicked() {
+        actions.push(Action::OuvrirEmplacement(id));
+        ui.close();
+    }
+    ui.separator();
+    let fav = if jeu.favori {
+        "☆  Retirer des favoris"
+    } else {
+        "⭐  Ajouter aux favoris"
+    };
+    if ui.button(fav).clicked() {
+        actions.push(Action::BasculerFavori(id));
+        ui.close();
+    }
+    if ui.button("🏷  Tags…").clicked() {
+        actions.push(Action::EditerTags(id));
+        ui.close();
+    }
+    if ui.button("📝  Statut et notes…").clicked() {
+        actions.push(Action::EditerNotes(id));
+        ui.close();
+    }
+    ui.separator();
+    if ui.button("✏  Renommer").clicked() {
+        actions.push(Action::DebuterRenommage(id));
+        ui.close();
+    }
+    if ui.button("🖼  Modifier l'icône…").clicked() {
+        actions.push(Action::ChangerIcone(id));
+        ui.close();
+    }
+    if jeu.icone_perso.is_some() && ui.button("↺  Rétablir l'icône d'origine").clicked() {
+        actions.push(Action::RetablirIcone(id));
+        ui.close();
+    }
+    if ui.button("🖼  Jaquette et bannière…").clicked() {
+        actions.push(Action::EditerVisuels(id));
+        ui.close();
+    }
+    if ui.button("⚙  Arguments de lancement…").clicked() {
+        actions.push(Action::EditerArguments(id));
+        ui.close();
+    }
+    ui.separator();
+    if ui.button("➖  Retirer du launcher").clicked() {
+        actions.push(Action::DemanderRetrait(id));
+        ui.close();
+    }
+    if ui
+        .button(RichText::new("🗑  Supprimer le jeu du disque…").color(p.danger))
+        .clicked()
+    {
+        actions.push(Action::DemanderSuppression(id));
+        ui.close();
+    }
+}
+
+/// Double-clic, infobulle et menu contextuel, communs à toutes les vues.
+fn interactions_jeu(reponse: egui::Response, jeu: &Jeu, actions: &mut Vec<Action>) {
+    if reponse.double_clicked() {
+        actions.push(Action::Lancer(jeu.id));
+    }
+    let survol = reponse.hovered() || reponse.context_menu_opened();
+    let reponse = reponse.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let reponse = if survol && !reponse.context_menu_opened() {
+        reponse.on_hover_ui_at_pointer(|ui| infobulle_jeu(ui, jeu))
+    } else {
+        reponse
+    };
+    reponse.context_menu(|ui| menu_jeu(ui, jeu, actions));
+}
+
 fn titre_section(ui: &mut egui::Ui, texte: &str) {
     ui.label(RichText::new(texte).size(18.0).family(theme::gras()));
     ui.add_space(6.0);
@@ -2080,6 +2342,9 @@ impl eframe::App for App {
         self.icones.recevoir(&ctx);
         self.suivre_scan();
         self.suivre_suppressions();
+        self.suivre_visuels();
+        self.suivre_lot();
+        self.suivre_maj();
         self.raccourcis_clavier(&ctx);
 
         let mut actions = Vec::new();
@@ -2114,5 +2379,25 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.enregistrer_parties_en_cours();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apercu_des_notes_sur_une_ligne() {
+        assert_eq!(apercu_notes("  a\n\n b  c "), "a b c");
+        assert_eq!(apercu_notes(""), "");
+    }
+
+    #[test]
+    fn apercu_des_notes_coupe_les_longs_textes() {
+        let long = "é".repeat(APERCU_NOTES_MAX + 10);
+        let apercu = apercu_notes(&long);
+        assert_eq!(apercu.chars().count(), APERCU_NOTES_MAX + 1);
+        assert!(apercu.ends_with('…'));
+        assert_eq!(apercu_notes(&"é".repeat(APERCU_NOTES_MAX)).chars().count(), APERCU_NOTES_MAX);
     }
 }

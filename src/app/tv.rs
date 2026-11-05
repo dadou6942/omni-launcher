@@ -4,6 +4,8 @@
 use super::*;
 
 const ECART: f32 = 22.0;
+/// Marges du panneau de détails du jeu sélectionné.
+const MARGES_DETAILS: Vec2 = Vec2::new(40.0, 18.0);
 
 #[derive(Default)]
 pub(super) struct EtatTv {
@@ -26,6 +28,7 @@ impl EtatTv {
 enum FiltreTv {
     Tous,
     Favoris,
+    Statut(Statut),
     Tag(String),
 }
 
@@ -34,6 +37,7 @@ impl FiltreTv {
         match self {
             FiltreTv::Tous => "Tous".into(),
             FiltreTv::Favoris => "⭐ Favoris".into(),
+            FiltreTv::Statut(s) => s.libelle().into(),
             FiltreTv::Tag(t) => t.clone(),
         }
     }
@@ -60,6 +64,7 @@ fn deplacer(i: usize, n: usize, colonnes: usize, c: Commande) -> usize {
 impl App {
     fn filtres_tv(&self) -> Vec<FiltreTv> {
         let mut f = vec![FiltreTv::Tous, FiltreTv::Favoris];
+        f.extend(self.config.statuts().into_iter().map(|(s, _)| FiltreTv::Statut(s)));
         f.extend(self.config.tags().into_iter().map(|(t, _)| FiltreTv::Tag(t)));
         f
     }
@@ -74,9 +79,10 @@ impl App {
 
     fn ids_tv(&self) -> Vec<u64> {
         let (fav, autres) = match self.filtre_tv() {
-            FiltreTv::Tous => self.trier_filtrer("", None),
-            FiltreTv::Favoris => (self.trier_filtrer("", None).0, Vec::new()),
-            FiltreTv::Tag(t) => self.trier_filtrer("", Some(&t)),
+            FiltreTv::Tous => self.trier_filtrer("", None, None),
+            FiltreTv::Favoris => (self.trier_filtrer("", None, None).0, Vec::new()),
+            FiltreTv::Statut(s) => self.trier_filtrer("", None, Some(s)),
+            FiltreTv::Tag(t) => self.trier_filtrer("", Some(&t), None),
         };
         fav.into_iter().chain(autres).collect()
     }
@@ -173,7 +179,10 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(p.bg_menu)
-                    .inner_margin(egui::Margin::symmetric(40, 18)),
+                    .inner_margin(egui::Margin::symmetric(
+                        MARGES_DETAILS.x as i8,
+                        MARGES_DETAILS.y as i8,
+                    )),
             )
             .show(ui, |ui| self.tv_details(ui));
 
@@ -243,8 +252,16 @@ impl App {
             return;
         }
 
-        let cote = (ui.available_height() / 2.6).clamp(140.0, 240.0);
-        let taille = Vec2::new(cote + 28.0, cote + 52.0);
+        // Dès qu'un jeu a une jaquette, les tuiles passent au format portrait.
+        let portrait = self.config.jeux.iter().any(|j| j.jaquette.is_some());
+        let (cote, hauteur) = if portrait {
+            let cote = (ui.available_height() / 3.6).clamp(120.0, 200.0);
+            (cote, cote * RATIO_JAQUETTE)
+        } else {
+            let cote = (ui.available_height() / 2.6).clamp(140.0, 240.0);
+            (cote, cote)
+        };
+        let taille = Vec2::new(cote + 28.0, hauteur + 52.0);
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -261,7 +278,7 @@ impl App {
                         ui.add_space(marge);
                         ui.spacing_mut().item_spacing.x = ECART;
                         for &id in ligne {
-                            self.tv_tuile(ui, id, taille, cote, actions);
+                            self.tv_tuile(ui, id, taille, portrait, actions);
                         }
                     });
                     ui.add_space(ECART);
@@ -271,7 +288,7 @@ impl App {
         self.tv.defiler = false;
     }
 
-    fn tv_tuile(&mut self, ui: &mut egui::Ui, id: u64, taille: Vec2, cote: f32, actions: &mut Vec<Action>) {
+    fn tv_tuile(&mut self, ui: &mut egui::Ui, id: u64, taille: Vec2, portrait: bool, actions: &mut Vec<Action>) {
         let Some(jeu) = self.jeu(id).cloned() else { return };
         let p = theme::p();
         let selectionne = self.tv.selection == Some(id);
@@ -295,9 +312,17 @@ impl App {
             peintre.rect_filled(rect, CornerRadius::same(14), p.bg_tuile_hover);
         }
 
-        let zone_icone = egui::Rect::from_min_size(rect.min + Vec2::new(14.0, 12.0), Vec2::splat(cote));
+        let zone_icone = egui::Rect::from_min_size(
+            rect.min + Vec2::new(14.0, 12.0),
+            Vec2::new(taille.x - 28.0, taille.y - 52.0),
+        );
         let manquant = self.manquants.contains(&id);
-        self.dessiner_icone(ui, &jeu, zone_icone, manquant);
+        if portrait {
+            self.dessiner_jaquette(ui, &jeu, zone_icone, manquant);
+        } else {
+            self.dessiner_icone(ui, &jeu, zone_icone, manquant);
+        }
+        marquer_statut(&peintre, zone_icone.left_top() + Vec2::splat(12.0), jeu.statut);
 
         if jeu.favori {
             peintre.text(
@@ -336,14 +361,26 @@ impl App {
     fn tv_details(&mut self, ui: &mut egui::Ui) {
         let p = theme::p();
         let jeu = self.tv.selection.and_then(|id| self.jeu(id)).cloned();
+        // La bannière passe sous le texte : sa taille dépend de celui-ci, on
+        // réserve donc sa place dans la liste de dessin avant de le poser.
+        let mut peintre = ui.painter().clone();
+        peintre.set_clip_rect(ui.ctx().content_rect());
+        let fond = peintre.add(egui::Shape::Noop);
+        let voile_fond = peintre.add(egui::Shape::Noop);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 match &jeu {
                     Some(j) => {
                         ui.label(RichText::new(&j.nom).size(26.0).family(theme::gras()));
                         ui.label(RichText::new(resume_jeu(j)).size(16.0).color(p.fg_muted));
+                        if j.statut != Statut::Aucun {
+                            ui.label(RichText::new(j.statut.libelle()).color(couleur_statut(j.statut)));
+                        }
                         if !j.tags.is_empty() {
                             ui.label(RichText::new(format!("🏷 {}", j.tags.join("  ·  "))).color(p.fg_muted));
+                        }
+                        if !j.notes.is_empty() {
+                            ui.label(RichText::new(format!("📝 {}", apercu_notes(&j.notes))).color(p.fg_muted));
                         }
                         if self.manquants.contains(&j.id) {
                             ui.label(RichText::new("Exécutable introuvable").color(p.danger));
@@ -368,6 +405,18 @@ impl App {
                 }
             });
         });
+
+        let texture = jeu.as_ref().and_then(|j| {
+            let fichier = j.banniere.as_deref()?;
+            self.icones.visuel(j.id, Genre::Banniere, fichier)
+        });
+        if let Some(t) = texture {
+            let cadre = ui.min_rect().expand2(MARGES_DETAILS);
+            let uv = icons::uv_couvrir(t.size_vec2(), cadre.size());
+            peintre.set(fond, egui::Shape::image(t.id(), cadre, uv, Color32::WHITE));
+            let opacite = egui::Shape::rect_filled(cadre, CornerRadius::ZERO, voile(p.bg_menu, 190));
+            peintre.set(voile_fond, opacite);
+        }
     }
 }
 
