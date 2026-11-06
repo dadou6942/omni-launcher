@@ -115,6 +115,30 @@ impl EtatXmb {
         self.pile.push(Niveau { page, focus: 0 });
     }
 
+    /// Les confirmations et la revue d'un scan restent dans la pile : une page
+    /// peut s'ouvrir par-dessus (choisir un fichier pour localiser un jeu).
+    fn synchroniser(&mut self, dialogue: bool, revue: bool) {
+        self.pile.retain(|n| match n.page {
+            Page::Dialogue => dialogue,
+            Page::Revue => revue,
+            _ => true,
+        });
+        let present = |e: &Self, page: Page| e.pile.iter().any(|n| n.page == page);
+        if revue && !present(self, Page::Revue) {
+            self.ouvrir(Page::Revue);
+        }
+        if dialogue && !present(self, Page::Dialogue) {
+            self.ouvrir(Page::Dialogue);
+        }
+    }
+
+    /// Une confirmation ou une revue attend une réponse explicite.
+    fn page_bloquante(&self) -> bool {
+        self.pile
+            .iter()
+            .any(|n| matches!(n.page, Page::Dialogue | Page::Revue))
+    }
+
     fn cache_fichiers(&self, dossier: Option<&Path>) -> Option<Vec<EntreeFichier>> {
         let (cle, entrees) = self.fichiers.as_ref()?;
         (cle.as_deref() == dossier).then(|| entrees.clone())
@@ -255,20 +279,30 @@ impl App {
 
     /// Les confirmations et la revue d'un scan deviennent des pages du menu.
     fn synchroniser_xmb(&mut self) {
-        let dernier = self.xmb.pile.last().map(|n| n.page.clone());
-        match dernier {
-            Some(Page::Dialogue) if self.dialogue.is_none() => {
-                self.xmb.pile.pop();
-            }
-            Some(Page::Revue) if self.revue.is_none() => {
-                self.xmb.pile.pop();
-            }
-            Some(Page::Dialogue) => {}
-            _ if self.dialogue.is_some() => self.xmb.ouvrir(Page::Dialogue),
-            Some(Page::Revue) => {}
-            _ if self.revue.is_some() => self.xmb.ouvrir(Page::Revue),
-            _ => {}
+        self.xmb.synchroniser(self.dialogue.is_some(), self.revue.is_some());
+        // Un jeu retiré emporte les pages qui le concernent.
+        let jeux = &self.bib;
+        self.xmb.pile.retain(|n| match n.page {
+            Page::OptionsJeu(id)
+            | Page::StatutJeu(id)
+            | Page::TagsJeu(id)
+            | Page::ImagesJeu(id) => jeux.jeu(id).is_some(),
+            _ => true,
+        });
+    }
+
+    /// Quitte toutes les pages ouvertes : leur état ne doit pas survivre.
+    pub(super) fn sortir_pages(&mut self) {
+        let en_recherche = self.xmb.pile.iter().any(|n| n.page == Page::Recherche);
+        if en_recherche {
+            self.recherche.clear();
         }
+        if !self.edition_visuels.as_ref().is_some_and(|e| e.occupe()) {
+            self.edition_visuels = None;
+        }
+        self.xmb.pile.clear();
+        self.xmb.clavier = None;
+        self.xmb.fichiers = None;
     }
 
     /// Replace le focus sur un jeu après une partie.
@@ -354,6 +388,7 @@ impl App {
         let elements = self.elements_courants();
         let focus = self.xmb.focus_courant().min(elements.len().saturating_sub(1));
         let a_pile = !self.xmb.pile.is_empty();
+        let bloque = self.xmb.page_bloquante();
         let bouger = |etat: &mut EtatXmb, delta| {
             let nouveau = deplacer_focus(focus, elements.len(), delta);
             etat.definir_focus(nouveau);
@@ -370,15 +405,15 @@ impl App {
                 self.xmb.changer_categorie(if c == Commande::Gauche { -1 } else { 1 });
                 self.son(Son::Deplacement);
             }
-            Commande::Gauche => {
+            Commande::Gauche if !bloque => {
                 self.fermer_page();
                 self.son(Son::Retour);
             }
-            Commande::Droite => {}
+            Commande::Gauche | Commande::Droite => {}
+            Commande::FiltrePrecedent | Commande::FiltreSuivant | Commande::Parametres if bloque => {}
             Commande::FiltrePrecedent | Commande::FiltreSuivant => {
                 let delta = if c == Commande::FiltrePrecedent { -1 } else { 1 };
-                self.dialogue = None;
-                self.revue = None;
+                self.sortir_pages();
                 self.xmb.changer_categorie(delta);
                 self.son(Son::Deplacement);
             }
@@ -406,9 +441,7 @@ impl App {
                 self.son(Son::Validation);
             }
             Commande::Parametres => {
-                self.dialogue = None;
-                self.revue = None;
-                self.xmb.pile.clear();
+                self.sortir_pages();
                 self.xmb.categorie = INDEX_PARAMETRES;
                 self.son(Son::Validation);
             }
@@ -481,8 +514,8 @@ impl App {
             But::Icone(id) => self.adopter_icone(id, &chemin),
             But::Image(id, genre) => self.importer_visuel(id, genre, &chemin),
             But::Exporter => {
-                let nom = format!("omni_launcher_{}.json", chrono::Local::now().format("%Y-%m-%d"));
-                self.exporter_vers(&chemin.join(nom));
+                let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+                self.exporter_vers(&chemin_export_libre(&chemin, &date));
             }
             But::Importer => self.lire_import(&chemin),
         }
@@ -520,10 +553,12 @@ impl App {
                 }
                 self.sauver();
             }
-            Interne::SupprimerTag(t) => {
+            Interne::SupprimerTag(t) => self.dialogue = Some(Dialogue::SupprimerTag(t)),
+            Interne::ConfirmerSuppressionTag(t) => {
+                self.dialogue = None;
                 self.bib.config.supprimer_tag(&t);
                 self.sauver();
-                self.xmb.pile.pop();
+                self.xmb.pile.retain(|n| !matches!(n.page, Page::OptionsTag(_)));
             }
             Interne::RetirerImage(id, genre) => {
                 self.bib.changer_visuel(id, genre, None);
@@ -996,6 +1031,18 @@ impl App {
     }
 }
 
+/// Nom d'export qui n'écrase aucun fichier du dossier.
+fn chemin_export_libre(dossier: &Path, date: &str) -> PathBuf {
+    let premier = dossier.join(format!("omni_launcher_{date}.json"));
+    if !premier.exists() {
+        return premier;
+    }
+    (2..)
+        .map(|i| dossier.join(format!("omni_launcher_{date}_{i}.json")))
+        .find(|p| !p.exists())
+        .unwrap_or(premier)
+}
+
 /// Coche le premier exécutable de chaque jeu, hors doublons.
 pub(super) fn cocher_principaux(candidats: &mut [Candidat]) {
     let mut vus = HashSet::new();
@@ -1047,6 +1094,43 @@ mod tests {
         assert_eq!(x.focus_courant(), 1);
         x.pile.pop();
         assert_eq!(x.focus_courant(), 2);
+    }
+
+    #[test]
+    fn une_page_s_ouvre_par_dessus_une_confirmation() {
+        let mut x = EtatXmb::default();
+        x.synchroniser(true, false);
+        assert_eq!(x.pile.len(), 1);
+        x.ouvrir(Page::Fichiers(But::Localiser(1), None));
+        x.synchroniser(true, false);
+        assert_eq!(x.pile.len(), 2, "la confirmation ne repasse pas devant");
+        assert!(matches!(x.pile[1].page, Page::Fichiers(..)));
+        x.synchroniser(false, false);
+        assert_eq!(x.pile.len(), 1, "seule la confirmation disparaît");
+        assert!(matches!(x.pile[0].page, Page::Fichiers(..)));
+    }
+
+    #[test]
+    fn revue_et_confirmation_bloquent_le_changement_de_categorie() {
+        let mut x = EtatXmb::default();
+        assert!(!x.page_bloquante());
+        x.synchroniser(false, true);
+        assert!(x.page_bloquante());
+        x.synchroniser(false, false);
+        assert!(!x.page_bloquante());
+    }
+
+    #[test]
+    fn l_export_n_ecrase_pas_un_fichier_existant() {
+        let d = std::env::temp_dir().join(format!("omni_export_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let premier = chemin_export_libre(&d, "2026-11-06");
+        assert!(premier.ends_with("omni_launcher_2026-11-06.json"));
+        std::fs::write(&premier, "{}").unwrap();
+        let second = chemin_export_libre(&d, "2026-11-06");
+        assert!(second.ends_with("omni_launcher_2026-11-06_2.json"));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

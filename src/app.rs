@@ -563,6 +563,10 @@ impl App {
     }
 
     fn lancer(&mut self, id: u64, ctx: &egui::Context) {
+        // Un jeu vient de partir : une touche maintenue ne le relance pas.
+        if self.reduire_a.is_some() {
+            return;
+        }
         let suivi_existant = self.parties.iter().any(|p| p.id == id);
         match self.bib.lancer(id, suivi_existant) {
             Ok(lancement) => {
@@ -843,7 +847,7 @@ impl App {
             match m {
                 MsgManette::Connectee(nom, famille) => {
                     self.manette_connectee = Some((nom, famille));
-                    if self.bib.config.bascule_manette && !self.mode_tv {
+                    if self.bib.config.bascule_manette && !self.mode_tv && self.parties.is_empty() {
                         self.basculer_mode_tv(ctx);
                     }
                 }
@@ -855,6 +859,9 @@ impl App {
     }
 
     fn basculer_mode_tv(&mut self, ctx: &egui::Context) {
+        if self.mode_tv {
+            self.sortir_pages();
+        }
         self.mode_tv = !self.mode_tv;
         self.renommage = None;
         self.palette = None;
@@ -868,6 +875,9 @@ impl App {
     fn raccourcis_bureau(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let libre = self.dialogue.is_none()
             && self.palette.is_none()
+            && !self.aide_ouverte
+            && self.scan.is_none()
+            && !self.lot_en_cours()
             && self.revue.is_none()
             && self.edition_visuels.is_none();
         if !libre {
@@ -943,7 +953,7 @@ impl App {
 
     fn traiter_commandes(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         for c in std::mem::take(&mut self.commandes) {
-            if c == Commande::BasculerPleinEcran {
+            if c == Commande::BasculerPleinEcran || (c == Commande::Parametres && !self.mode_tv) {
                 self.basculer_mode_tv(ctx);
             } else if self.mode_tv {
                 self.commande_tv(c, ctx, actions);

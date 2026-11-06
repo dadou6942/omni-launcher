@@ -112,6 +112,7 @@ pub(super) enum Interne {
     Statut(u64, Statut),
     BasculerTag(u64, String),
     SupprimerTag(String),
+    ConfirmerSuppressionTag(String),
     RetirerImage(u64, Genre),
     Telecharger(u64),
     OuvrirSauvegardes,
@@ -674,6 +675,14 @@ impl App {
                 interne("➖", "Retirer du launcher", "", Interne::ConfirmerRetrait(*id)),
                 annuler,
             ],
+            Some(Dialogue::SupprimerTag(t)) => {
+                let n = self.bib.config.jeux.iter().filter(|j| j.a_tag(t)).count();
+                vec![
+                    info(format!("Retirer le tag « {t} » de {n} jeu(x) ?"), "Les jeux eux-mêmes ne sont pas touchés"),
+                    interne("🗑", "Supprimer le tag", "", Interne::ConfirmerSuppressionTag(t.clone())),
+                    annuler,
+                ]
+            }
             Some(Dialogue::RetirerIntrouvables) => vec![
                 info(format!("Retirer {} jeu(x) introuvable(s) ?", self.bib.ids_introuvables().len()), ""),
                 interne("➖", "Retirer", "", Interne::ConfirmerIntrouvables),

@@ -383,6 +383,10 @@ impl Bibliotheque {
         if !cible.is_absolute() {
             return Err("Chemin relatif refusé par sécurité.".into());
         }
+        // Un « .. » pourrait contourner la comparaison avec les dossiers protégés.
+        if cible.components().any(|c| matches!(c, Component::ParentDir)) {
+            return Err("Chemin avec « .. » refusé par sécurité.".into());
+        }
         let profondeur = cible
             .components()
             .filter(|c| matches!(c, Component::Normal(_)))
@@ -582,6 +586,19 @@ mod tests {
         assert!(!ancien.exists());
         b.changer_visuel(42, Genre::Banniere, Some("b.png".into()));
         assert!(!nouveau.exists(), "jeu disparu : l'image est nettoyée");
+    }
+
+    #[test]
+    fn suppression_refusee_pour_un_chemin_avec_remontee() {
+        let mut b = bib_test("remontee", &[("A", Statut::Aucun, false, None)]);
+        let dossier = b.dossiers.racine.join("jeu");
+        fs::create_dir_all(&dossier).unwrap();
+        let piege = b.dossiers.racine.join("jeu").join("..").join("jeu");
+        b.config.jeux[0].exe = piege.join("a.exe");
+        b.config.jeux[0].cible_suppression = Some(piege);
+        let jeu = b.jeu(1).unwrap().clone();
+        let erreur = b.verifier_suppression(&jeu).unwrap_err();
+        assert!(erreur.contains("«"), "{erreur}");
     }
 
     #[test]
