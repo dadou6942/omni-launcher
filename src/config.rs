@@ -178,7 +178,25 @@ pub enum Affichage {
     Liste,
 }
 
-pub const VERSION_CONFIG: u32 = 4;
+/// Présentation du mode plein écran.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum StylePleinEcran {
+    #[default]
+    Xmb,
+    Grille,
+}
+
+/// Boutons affichés dans les aides du mode plein écran.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum Glyphes {
+    /// Selon la manette branchée.
+    #[default]
+    Auto,
+    Xbox,
+    PlayStation,
+}
+
+pub const VERSION_CONFIG: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -193,6 +211,15 @@ pub struct Config {
     pub afficher_recents: bool,
     /// Cherche une nouvelle version sur GitHub au démarrage.
     pub verifier_maj: bool,
+    pub barre_repliee: bool,
+    pub style_plein_ecran: StylePleinEcran,
+    pub glyphes: Glyphes,
+    /// Fond animé du mode plein écran.
+    pub fond_anime: bool,
+    pub sons: bool,
+    pub demarrer_plein_ecran: bool,
+    /// Passe en plein écran quand une manette est branchée.
+    pub bascule_manette: bool,
     pub dernier_dossier_scan: Option<PathBuf>,
     pub theme: Theme,
     /// Couleur d'accent choisie par l'utilisateur, à la place de celle du thème.
@@ -223,6 +250,13 @@ impl Default for Config {
             affichage: Affichage::Grille,
             afficher_recents: true,
             verifier_maj: true,
+            barre_repliee: false,
+            style_plein_ecran: StylePleinEcran::Xmb,
+            glyphes: Glyphes::Auto,
+            fond_anime: true,
+            sons: true,
+            demarrer_plein_ecran: false,
+            bascule_manette: false,
             dernier_dossier_scan: None,
             theme: Theme::Omni,
             accent_perso: None,
@@ -500,6 +534,9 @@ mod tests {
         assert_eq!(c.affichage, Affichage::Grille);
         assert!(c.afficher_recents);
         assert!(c.verifier_maj);
+        assert!(c.fond_anime && c.sons);
+        assert!(!c.demarrer_plein_ecran && !c.bascule_manette);
+        assert_eq!(c.style_plein_ecran, StylePleinEcran::Xmb);
         assert_eq!(c.jeux[0].statut, Statut::Aucun);
         assert!(c.jeux[0].notes.is_empty());
         assert!(c.jeux[0].jaquette.is_none());

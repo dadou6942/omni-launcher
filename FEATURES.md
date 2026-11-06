@@ -148,20 +148,20 @@ La colonne « Aujourd'hui » indique où se trouve la fonctionnalité dans la v2
 
 ### Socle
 
-- [ ] Design tokens centralisés dans un seul fichier
-- [ ] Couche métier séparée de l'interface, appelée par les deux modes
+- [x] Design tokens centralisés dans un seul fichier
+- [x] Couche métier séparée de l'interface, appelée par les deux modes
 - [ ] Animations de 150 à 250 ms, jamais bloquantes
 - [ ] Fluide au-delà de 500 jeux, listes virtualisées, images paresseuses
 - [ ] Toute fonctionnalité accessible en 2 actions maximum
 
 ### Mode bureau
 
-- [ ] Barre latérale repliable : Bibliothèque, Récents, Favoris, Collections, Paramètres
-- [ ] Recherche toujours visible
-- [ ] Palette de commandes `Ctrl+K` avec toutes les actions
-- [ ] Panneau de détail du jeu : lancer, ouvrir le dossier, modifier, retirer
+- [x] Barre latérale repliable : Bibliothèque, Récents, Favoris, Collections, Paramètres
+- [x] Recherche toujours visible
+- [x] Palette de commandes `Ctrl+K` avec toutes les actions
+- [x] Panneau de détail du jeu : lancer, ouvrir le dossier, modifier, retirer
 - [ ] Doublons signalés dans l'aperçu du scan (aujourd'hui ils sont masqués)
-- [ ] Raccourcis clavier documentés dans l'interface
+- [x] Raccourcis clavier documentés dans l'interface
 
 ### Mode plein écran XMB
 

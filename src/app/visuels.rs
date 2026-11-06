@@ -296,7 +296,7 @@ impl App {
             .collect()
     }
 
-    fn lancer_lot(&mut self, ctx: &egui::Context) {
+    pub(super) fn lancer_lot(&mut self, ctx: &egui::Context) {
         let jeux = self.jeux_incomplets();
         if jeux.is_empty() {
             self.notifier("Tous les jeux ont déjà leurs images.");

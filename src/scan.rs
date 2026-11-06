@@ -21,6 +21,8 @@ pub struct Candidat {
     pub coche: bool,
     /// Libellé du groupe (nom du dossier du jeu).
     pub groupe: String,
+    /// Déjà dans la bibliothèque : signalé, jamais importé.
+    pub doublon: bool,
 }
 
 /// Mots qui, présents dans le nom d'un exe, indiquent un utilitaire.
@@ -249,7 +251,7 @@ pub fn embellir_nom(brut: &str) -> String {
     }
 }
 
-/// Scanne `racine`. `deja_present` permet d'ignorer les exe déjà dans la
+/// Scanne `racine`. `deja_present` permet de signaler les exe déjà dans la
 /// bibliothèque ; `progression(fait, total, nom)` est appelé pour chaque dossier.
 pub fn scanner(
     racine: &Path,
@@ -279,7 +281,8 @@ pub fn scanner(
 
         // Exécutable posé directement dans le dossier scanné.
         if chemin.is_file() {
-            if est_exe(&chemin) && !est_exe_parasite(&chemin) && !deja_present(&chemin) {
+            if est_exe(&chemin) && !est_exe_parasite(&chemin) {
+                let doublon = deja_present(&chemin);
                 let stem = chemin
                     .file_stem()
                     .unwrap_or_default()
@@ -289,8 +292,9 @@ pub fn scanner(
                     nom: embellir_nom(&stem),
                     cible_suppression: chemin.clone(),
                     exe: chemin,
-                    coche: true,
+                    coche: !doublon,
                     groupe: "(fichiers isolés)".into(),
+                    doublon,
                 });
             }
             continue;
@@ -327,9 +331,7 @@ pub fn scanner(
         let nom_jeu = embellir_nom(&nom_entree);
         let plusieurs = exes.len() > 1;
         for (rang, (exe, _)) in exes.into_iter().enumerate() {
-            if deja_present(&exe) {
-                continue;
-            }
+            let doublon = deja_present(&exe);
             let nom = if rang == 0 {
                 nom_jeu.clone()
             } else {
@@ -344,8 +346,9 @@ pub fn scanner(
                 exe,
                 nom,
                 cible_suppression: chemin.clone(),
-                coche: rang == 0 || !plusieurs,
+                coche: !doublon && (rang == 0 || !plusieurs),
                 groupe: nom_jeu.clone(),
+                doublon,
             });
         }
     }
@@ -425,6 +428,9 @@ mod tests {
         assert!(coches.contains(&"Celeste"));
         assert!(coches.contains(&"Tetris"));
         assert_eq!(coches.len(), 4, "{coches:?}");
+        let doublons: Vec<_> = r.iter().filter(|c| c.doublon).collect();
+        assert_eq!(doublons.len(), 1, "le doublon reste signalé");
+        assert!(!doublons[0].coche, "un doublon n'est jamais pré-coché");
 
         // L'exe principal de Stray est celui à la racine.
         let stray = r.iter().find(|c| c.nom == "Stray").unwrap();

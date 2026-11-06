@@ -109,9 +109,6 @@ impl App {
         c: &Colonnes,
         actions: &mut Vec<Action>,
     ) {
-        let Some(jeu) = self.bib.jeu(id).cloned() else {
-            return;
-        };
         let p = theme::p();
         let manquant = self.bib.manquants.contains(&id);
         let (rect, reponse) =
@@ -119,9 +116,18 @@ impl App {
         if !ui.is_rect_visible(rect) {
             return; // Ligne hors écran : rien à dessiner ni à charger.
         }
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
+            return;
+        };
         let peintre = ui.painter_at(rect);
-        if reponse.hovered() || reponse.context_menu_opened() {
-            peintre.rect_filled(rect, CornerRadius::same(8), p.bg_tuile_hover);
+        if self.selection == Some(id) {
+            peintre.rect_filled(
+                rect,
+                CornerRadius::same(theme::RAYON_S),
+                p.accent.gamma_multiply(0.12),
+            );
+        } else if reponse.hovered() || reponse.context_menu_opened() {
+            peintre.rect_filled(rect, CornerRadius::same(theme::RAYON_S), p.bg_tuile_hover);
         }
 
         let zone_icone = egui::Rect::from_center_size(
@@ -226,7 +232,7 @@ impl App {
         let survol = reponse.hovered() || reponse.context_menu_opened();
         let arrondi = CornerRadius::same(10);
         let peintre = ui.painter_at(rect);
-        peintre.rect_filled(rect, arrondi, if survol { p.bg_tuile_hover } else { p.bg_menu });
+        peintre.rect_filled(rect, arrondi, if survol { p.bg_btn } else { p.bg_menu });
 
         let banniere = jeu
             .banniere
@@ -239,7 +245,6 @@ impl App {
             let opacite = if survol { 130 } else { 175 };
             peintre.rect_filled(rect, arrondi, voile(p.bg_menu, opacite));
         }
-        peintre.rect_stroke(rect, arrondi, Stroke::new(1.0, p.bordure), egui::StrokeKind::Inside);
 
         let marge = (rect.height() - 60.0) / 2.0;
         let zone_icone =

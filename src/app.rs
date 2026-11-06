@@ -2,8 +2,12 @@
 //! Les vues Paramètres, Statistiques et le mode plein écran sont dans les
 //! sous-modules.
 
+mod barre;
+mod contenu;
+mod detail;
 mod liste;
 mod mises_a_jour;
+mod palette;
 mod parametres;
 mod statistiques;
 mod tv;
@@ -45,14 +49,38 @@ const APERCU_NOTES_MAX: usize = 90;
 /// Action différée exécutée après la fermeture d'une boîte de dialogue.
 type ActionDialogue = Box<dyn FnOnce(&mut App, &egui::Context)>;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Vue {
     Bibliotheque,
     Parametres,
     Statistiques,
 }
 
+#[derive(Clone)]
 enum Action {
+    Selectionner(u64),
+    FermerDetail,
+    AllerSection(Section),
+    Ouvrir(Vue),
+    Ajouter,
+    Scanner,
+    Rescanner,
+    BasculerPleinEcran,
+    BasculerBarre,
+    Palette,
+    Aide,
+    ChangerAffichage(Affichage),
+    ChangerTri(Tri),
+    ChangerTheme(crate::config::Theme),
+    Exporter,
+    Importer,
+    VerifierIntrouvables,
+    RetirerIntrouvables,
+    RecupererImages,
+    VerifierMaj,
+    OuvrirDonnees,
+    ViderCache,
+    Quitter,
     Lancer(u64),
     BasculerFavori(u64),
     DebuterRenommage(u64),
@@ -131,8 +159,14 @@ pub struct App {
     vue: Vue,
     recherche: String,
     focus_recherche: bool,
-    filtre_tag: Option<String>,
+    section: Section,
     filtre_statut: Option<Statut>,
+    /// Jeu sélectionné, montré dans le panneau de détail.
+    selection: Option<u64>,
+    /// Dernier jeu montré, le temps que le panneau se referme.
+    detail_affiche: Option<u64>,
+    palette: Option<palette::EtatPalette>,
+    aide_ouverte: bool,
     renommage: Option<Renommage>,
     dialogue: Option<Dialogue>,
     scan: Option<ScanEnCours>,
@@ -173,8 +207,12 @@ impl App {
             vue: Vue::Bibliotheque,
             recherche: String::new(),
             focus_recherche: false,
-            filtre_tag: None,
+            section: Section::Tout,
             filtre_statut: None,
+            selection: None,
+            detail_affiche: None,
+            palette: None,
+            aide_ouverte: false,
             renommage: None,
             dialogue: None,
             scan: None,
@@ -230,19 +268,6 @@ impl App {
 
     fn appliquer_theme(&self, ctx: &egui::Context) {
         theme::appliquer(ctx, self.bib.config.theme, self.bib.config.accent_perso);
-    }
-
-    fn listes_visibles(&self) -> (Vec<u64>, Vec<u64>) {
-        let section = match &self.filtre_tag {
-            Some(t) => Section::Collection(t.clone()),
-            None => Section::Tout,
-        };
-        let ids = self.bib.lister(Filtre {
-            section: &section,
-            recherche: &self.recherche,
-            statut: self.filtre_statut,
-        });
-        self.bib.separer_favoris(&ids)
     }
 
     // ------------------------------------------------------------------
@@ -349,7 +374,9 @@ impl App {
             if annule {
                 self.notifier("Scan annulé.");
             } else if candidats.is_empty() {
-                self.notifier("Aucun nouveau jeu trouvé dans ce dossier.");
+                self.notifier("Aucun jeu trouvé dans ce dossier.");
+            } else if candidats.iter().all(|c| c.doublon) {
+                self.notifier("Tous les jeux de ce dossier sont déjà dans la bibliothèque.");
             } else {
                 self.revue = Some(Revue { candidats });
             }
@@ -372,6 +399,83 @@ impl App {
 
     fn executer(&mut self, action: Action, ctx: &egui::Context) {
         match action {
+            Action::Selectionner(id) => self.selection = Some(id),
+            Action::FermerDetail => self.selection = None,
+            Action::AllerSection(section) => {
+                self.vue = Vue::Bibliotheque;
+                self.section = section;
+                self.filtre_statut = None;
+            }
+            Action::Ouvrir(vue) => {
+                if vue == Vue::Parametres {
+                    self.rafraichir_sauvegardes();
+                }
+                self.vue = vue;
+            }
+            Action::Ajouter => self.choisir_exe(),
+            Action::Scanner => self.choisir_dossier_scan(ctx),
+            Action::Rescanner => match self.bib.config.dernier_dossier_scan.clone() {
+                Some(d) => self.lancer_scan(d, ctx),
+                None => self.notifier("Aucun dossier scanné pour l'instant."),
+            },
+            Action::BasculerPleinEcran => self.commandes.push(Commande::BasculerPleinEcran),
+            Action::BasculerBarre => {
+                self.bib.config.barre_repliee = !self.bib.config.barre_repliee;
+                self.sauver();
+            }
+            Action::Palette => self.palette = Some(palette::EtatPalette::default()),
+            Action::Aide => self.aide_ouverte = true,
+            Action::ChangerAffichage(a) => {
+                self.bib.config.affichage = a;
+                self.sauver();
+            }
+            Action::ChangerTri(t) => {
+                self.bib.config.tri = t;
+                self.sauver();
+            }
+            Action::ChangerTheme(t) => {
+                self.bib.config.theme = t;
+                self.bib.config.accent_perso = None;
+                self.appliquer_theme(ctx);
+                self.sauver();
+            }
+            Action::Exporter => self.exporter(),
+            Action::Importer => self.choisir_import(),
+            Action::VerifierIntrouvables => {
+                self.bib.verifier_manquants();
+                let n = self.bib.manquants.len();
+                self.notifier(match n {
+                    0 => "Tous les jeux sont présents.".to_string(),
+                    n => format!("{n} jeu(x) introuvable(s)."),
+                });
+            }
+            Action::RetirerIntrouvables => {
+                self.bib.verifier_manquants();
+                if self.bib.manquants.is_empty() {
+                    self.notifier("Tous les jeux sont présents.");
+                } else {
+                    self.dialogue = Some(Dialogue::RetirerIntrouvables);
+                }
+            }
+            Action::RecupererImages => {
+                if self.cle_sgdb.trim().is_empty() {
+                    self.notifier("Ajoutez d'abord votre clé SteamGridDB dans les paramètres.");
+                } else {
+                    self.lancer_lot(ctx);
+                }
+            }
+            Action::VerifierMaj => {
+                self.chercher_maj(ctx, true);
+                self.notifier("Recherche d'une mise à jour…");
+            }
+            Action::OuvrirDonnees => {
+                let racine = self.bib.dossiers.racine.clone();
+                if let Err(e) = platform::ouvrir_dossier(&racine) {
+                    self.notifier_erreur(e);
+                }
+            }
+            Action::ViderCache => self.vider_cache(),
+            Action::Quitter => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::Lancer(id) => self.lancer(id, ctx),
             Action::BasculerFavori(id) => {
                 self.bib.basculer_favori(id);
@@ -633,8 +737,9 @@ impl App {
         }
         self.bib.oublier_images_absentes(&mut nouvelle);
         self.bib.config = nouvelle;
-        self.filtre_tag = None;
+        self.section = Section::Tout;
         self.filtre_statut = None;
+        self.selection = None;
         self.renommage = None;
         self.icones.tout_invalider();
         self.bib.verifier_manquants();
@@ -717,7 +822,44 @@ impl App {
         }
     }
 
-    fn raccourcis_clavier(&mut self, ctx: &egui::Context) {
+    fn raccourcis_bureau(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let libre = self.dialogue.is_none()
+            && self.palette.is_none()
+            && self.revue.is_none()
+            && self.edition_visuels.is_none();
+        if !libre {
+            return;
+        }
+        let saisie = ctx.memory(|m| m.focused().is_some());
+        ctx.input(|i| {
+            if i.modifiers.command {
+                let raccourcis = [
+                    (Key::K, Action::Palette),
+                    (Key::N, Action::Ajouter),
+                    (Key::O, Action::Scanner),
+                    (Key::B, Action::BasculerBarre),
+                ];
+                for (touche, action) in raccourcis {
+                    if i.key_pressed(touche) {
+                        actions.push(action);
+                    }
+                }
+            } else if i.key_pressed(Key::F1) {
+                actions.push(Action::Aide);
+            } else if !saisie {
+                if i.key_pressed(Key::Enter)
+                    && let Some(id) = self.selection
+                {
+                    actions.push(Action::Lancer(id));
+                }
+                if i.key_pressed(Key::Escape) {
+                    actions.push(Action::FermerDetail);
+                }
+            }
+        });
+    }
+
+    fn raccourcis_clavier(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let (ctrl_f, f11, deposes) = ctx.input(|i| {
             (
                 i.modifiers.command && i.key_pressed(Key::F),
@@ -736,6 +878,9 @@ impl App {
         if ctrl_f && !self.mode_tv {
             self.vue = Vue::Bibliotheque;
             self.focus_recherche = true;
+        }
+        if !self.mode_tv {
+            self.raccourcis_bureau(ctx, actions);
         }
         if !deposes.is_empty() {
             let (dossiers, fichiers): (Vec<PathBuf>, Vec<PathBuf>) =
@@ -766,315 +911,6 @@ impl App {
     // ------------------------------------------------------------------
     // Interface
     // ------------------------------------------------------------------
-
-    fn entete(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let ctx = ui.ctx().clone();
-        let p = theme::p();
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(14.0);
-            match self.vue {
-                Vue::Bibliotheque => {
-                    ui.heading("Bibliothèque");
-                    ui.label(
-                        RichText::new(format!("{} jeux", self.bib.config.jeux.len()))
-                            .color(p.fg_muted),
-                    );
-                }
-                Vue::Parametres | Vue::Statistiques => {
-                    if ui.button("⬅  Retour à la bibliothèque").clicked() {
-                        self.vue = Vue::Bibliotheque;
-                    }
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(14.0);
-                if self.vue == Vue::Bibliotheque {
-                    if ui.button("⚙  Paramètres").clicked() {
-                        self.rafraichir_sauvegardes();
-                        self.vue = Vue::Parametres;
-                    }
-                    self.bouton_maj(ui);
-                    if ui
-                        .button("📊")
-                        .on_hover_text("Statistiques de jeu")
-                        .clicked()
-                    {
-                        self.vue = Vue::Statistiques;
-                    }
-                    if ui
-                        .button("🎮")
-                        .on_hover_text("Mode plein écran à la manette (F11 ou bouton Start)")
-                        .clicked()
-                    {
-                        self.commandes.push(Commande::BasculerPleinEcran);
-                    }
-                    let scan_btn = ui.add_enabled(
-                        self.scan.is_none(),
-                        egui::Button::new("🗁  Scanner"),
-                    );
-                    if scan_btn
-                        .on_hover_text("Ajoute automatiquement tous les jeux d'un dossier")
-                        .clicked()
-                    {
-                        self.choisir_dossier_scan(&ctx);
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("+  Ajouter un jeu").color(p.sur_accent()),
-                            )
-                            .fill(p.accent),
-                        )
-                        .clicked()
-                    {
-                        self.choisir_exe();
-                    }
-
-                    ui.add_space(8.0);
-                    egui::ComboBox::from_id_salt("affichage")
-                        .selected_text(match self.bib.config.affichage {
-                            Affichage::Grille => "Icônes",
-                            Affichage::Jaquettes => "Jaquettes",
-                            Affichage::Liste => "Liste",
-                        })
-                        .show_ui(ui, |ui| {
-                            let avant = self.bib.config.affichage;
-                            ui.selectable_value(&mut self.bib.config.affichage, Affichage::Grille, "Icônes");
-                            ui.selectable_value(
-                                &mut self.bib.config.affichage,
-                                Affichage::Jaquettes,
-                                "Jaquettes",
-                            );
-                            ui.selectable_value(&mut self.bib.config.affichage, Affichage::Liste, "Liste");
-                            if avant != self.bib.config.affichage {
-                                self.sauver();
-                            }
-                        });
-                    egui::ComboBox::from_id_salt("tri")
-                        .selected_text(match self.bib.config.tri {
-                            Tri::Nom => "Tri : nom",
-                            Tri::DernierLancement => "Tri : récents",
-                            Tri::DateAjout => "Tri : ajout",
-                            Tri::TempsDeJeu => "Tri : temps de jeu",
-                        })
-                        .show_ui(ui, |ui| {
-                            let avant = self.bib.config.tri;
-                            ui.selectable_value(&mut self.bib.config.tri, Tri::Nom, "Nom");
-                            ui.selectable_value(
-                                &mut self.bib.config.tri,
-                                Tri::DernierLancement,
-                                "Joués récemment",
-                            );
-                            ui.selectable_value(
-                                &mut self.bib.config.tri,
-                                Tri::DateAjout,
-                                "Ajoutés récemment",
-                            );
-                            ui.selectable_value(
-                                &mut self.bib.config.tri,
-                                Tri::TempsDeJeu,
-                                "Les plus joués",
-                            );
-                            if avant != self.bib.config.tri {
-                                self.sauver();
-                            }
-                        });
-
-                    let largeur = (ui.available_width() - 10.0).clamp(140.0, 320.0);
-                    let rech = ui.add(
-                        egui::TextEdit::singleline(&mut self.recherche)
-                            .hint_text("🔍  Rechercher (Ctrl+F)")
-                            .desired_width(largeur)
-                            .margin(egui::vec2(10.0, 7.0)),
-                    );
-                    if self.focus_recherche {
-                        rech.request_focus();
-                        self.focus_recherche = false;
-                    }
-                    if rech.lost_focus() {
-                        let (entree, echap) =
-                            ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
-                        if echap {
-                            self.recherche.clear();
-                        } else if entree && !self.recherche.is_empty() {
-                            // Entrée : lance le premier résultat.
-                            let (fav, autres) = self.listes_visibles();
-                            if let Some(&id) = fav.first().or(autres.first()) {
-                                actions.push(Action::Lancer(id));
-                            }
-                        }
-                    }
-                }
-            });
-        });
-        ui.add_space(10.0);
-    }
-
-    /// Rangée de filtres par statut et par tag, sous l'en-tête.
-    fn filtres(&mut self, ui: &mut egui::Ui) {
-        let tags = self.bib.config.tags();
-        let statuts = self.bib.config.statuts();
-        if self
-            .filtre_statut
-            .is_some_and(|f| !statuts.iter().any(|(s, _)| *s == f))
-        {
-            self.filtre_statut = None;
-        }
-        if tags.is_empty() && statuts.is_empty() {
-            self.filtre_tag = None;
-            return;
-        }
-        if self
-            .filtre_tag
-            .as_ref()
-            .is_some_and(|f| !tags.iter().any(|(t, _)| t.eq_ignore_ascii_case(f)))
-        {
-            self.filtre_tag = None;
-        }
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            let aucun = self.filtre_tag.is_none() && self.filtre_statut.is_none();
-            if puce(ui, "Tous", aucun).clicked() {
-                self.filtre_tag = None;
-                self.filtre_statut = None;
-            }
-            for (statut, n) in statuts {
-                let actif = self.filtre_statut == Some(statut);
-                if puce(ui, &format!("{}  {n}", statut.libelle()), actif).clicked() {
-                    self.filtre_statut = if actif { None } else { Some(statut) };
-                }
-            }
-            for (tag, n) in tags {
-                let actif = self
-                    .filtre_tag
-                    .as_ref()
-                    .is_some_and(|f| f.eq_ignore_ascii_case(&tag));
-                if puce(ui, &format!("{tag}  {n}"), actif).clicked() {
-                    self.filtre_tag = if actif { None } else { Some(tag) };
-                }
-            }
-        });
-        ui.add_space(12.0);
-    }
-
-    fn bibliotheque(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let ctx = ui.ctx().clone();
-        let p = theme::p();
-        if self.bib.config.jeux.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() * 0.25);
-                ui.label(RichText::new("Aucun jeu dans votre bibliothèque").size(22.0).color(p.fg));
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Ajoutez un exécutable, scannez votre dossier de jeux, ou glissez-déposez-les ici.")
-                        .color(p.fg_muted),
-                );
-                ui.add_space(18.0);
-                ui.horizontal(|ui| {
-                    let largeur = 420.0;
-                    ui.add_space(((ui.available_width() - largeur) / 2.0).max(0.0));
-                    if ui
-                        .add(egui::Button::new(RichText::new("+  Ajouter un jeu").color(p.sur_accent())).fill(p.accent))
-                        .clicked()
-                    {
-                        self.choisir_exe();
-                    }
-                    if ui.add_enabled(self.scan.is_none(), egui::Button::new("🗁  Scanner un dossier")).clicked() {
-                        self.choisir_dossier_scan(&ctx);
-                    }
-                });
-            });
-            return;
-        }
-
-        let (favoris, autres) = self.listes_visibles();
-        let filtre_actif = !self.recherche.trim().is_empty()
-            || self.filtre_tag.is_some()
-            || self.filtre_statut.is_some();
-
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.add_space(4.0);
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 0)).show(ui, |ui| {
-                self.filtres(ui);
-
-                if !filtre_actif && self.bib.config.afficher_recents {
-                    self.recents(ui, actions);
-                }
-
-                if filtre_actif && favoris.is_empty() && autres.is_empty() {
-                    ui.add_space(40.0);
-                    ui.vertical_centered(|ui| {
-                        let texte = if self.recherche.trim().is_empty() {
-                            "Aucun jeu avec ce filtre.".to_string()
-                        } else {
-                            format!("Aucun jeu ne correspond à « {} ».", self.recherche.trim())
-                        };
-                        ui.label(RichText::new(texte).color(p.fg_muted));
-                    });
-                    return;
-                }
-
-                if !filtre_actif || !favoris.is_empty() {
-                    titre_section(ui, "Vos favoris ⭐");
-                    if favoris.is_empty() {
-                        ui.label(
-                            RichText::new("Aucun favori pour le moment. Clic droit sur un jeu ➔ Ajouter aux favoris.")
-                                .italics()
-                                .color(p.fg_muted),
-                        );
-                        ui.add_space(16.0);
-                    } else {
-                        self.afficher_jeux(ui, &favoris, actions);
-                    }
-                }
-
-                if !autres.is_empty() {
-                    ui.add_space(12.0);
-                    let recherche = !self.recherche.trim().is_empty();
-                    let titre = match (&self.filtre_tag, self.filtre_statut) {
-                        _ if recherche => "Résultats".to_string(),
-                        (Some(t), _) => t.clone(),
-                        (None, Some(s)) => s.libelle().to_string(),
-                        (None, None) => "Autres jeux".to_string(),
-                    };
-                    titre_section(ui, &titre);
-                    self.afficher_jeux(ui, &autres, actions);
-                }
-                ui.add_space(24.0);
-            });
-        });
-    }
-
-    fn afficher_jeux(&mut self, ui: &mut egui::Ui, ids: &[u64], actions: &mut Vec<Action>) {
-        match self.bib.config.affichage {
-            Affichage::Grille | Affichage::Jaquettes => self.grille(ui, ids, actions),
-            Affichage::Liste => self.liste(ui, ids, actions),
-        }
-    }
-
-    fn grille(&mut self, ui: &mut egui::Ui, ids: &[u64], actions: &mut Vec<Action>) {
-        let cote = self.bib.config.taille_tuile;
-        let hauteur = match self.bib.config.affichage {
-            Affichage::Jaquettes => cote * RATIO_JAQUETTE,
-            Affichage::Grille | Affichage::Liste => cote,
-        };
-        let taille = Vec2::new(cote + 24.0, hauteur + 56.0);
-        let ecart = 14.0;
-        let colonnes =
-            (((ui.available_width() + ecart) / (taille.x + ecart)).floor() as usize).max(1);
-
-        for ligne in ids.chunks(colonnes) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = ecart;
-                for &id in ligne {
-                    self.tuile(ui, id, taille, actions);
-                }
-            });
-            ui.add_space(ecart);
-        }
-    }
 
     /// Dessine l'icône d'un jeu (ou son initiale tant qu'elle n'est pas prête).
     fn dessiner_icone(&mut self, ui: &egui::Ui, jeu: &Jeu, zone: egui::Rect, manquant: bool) {
@@ -1196,9 +1032,6 @@ impl App {
     }
 
     fn tuile(&mut self, ui: &mut egui::Ui, id: u64, taille: Vec2, actions: &mut Vec<Action>) {
-        let Some(jeu) = self.bib.jeu(id).cloned() else {
-            return;
-        };
         let p = theme::p();
         let manquant = self.bib.manquants.contains(&id);
         let cote = self.bib.config.taille_tuile;
@@ -1207,11 +1040,24 @@ impl App {
         if !ui.is_rect_visible(rect) {
             return; // Tuile hors écran : rien à dessiner ni à charger.
         }
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
+            return;
+        };
         let survol = reponse.hovered() || reponse.context_menu_opened();
         let peintre = ui.painter_at(rect.expand(2.0));
 
-        if survol {
-            peintre.rect_filled(rect, CornerRadius::same(10), p.bg_tuile_hover);
+        let arrondi = CornerRadius::same(theme::RAYON_M);
+        if self.selection == Some(id) {
+            peintre.rect_filled(rect, arrondi, p.accent.gamma_multiply(0.14));
+        } else {
+            let survol_anime = ui.ctx().animate_bool_with_time(
+                reponse.id.with("survol"),
+                survol,
+                theme::DUREE_RAPIDE,
+            );
+            if survol_anime > 0.0 {
+                peintre.rect_filled(rect, arrondi, p.bg_tuile_hover.gamma_multiply(survol_anime));
+            }
         }
 
         let zone_icone = egui::Rect::from_min_size(
@@ -1306,7 +1152,7 @@ impl App {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("Tout cocher").clicked() {
-                    revue.candidats.iter_mut().for_each(|c| c.coche = true);
+                    revue.candidats.iter_mut().for_each(|c| c.coche = !c.doublon);
                 }
                 if ui.button("Tout décocher").clicked() {
                     revue.candidats.iter_mut().for_each(|c| c.coche = false);
@@ -1314,7 +1160,9 @@ impl App {
                 if ui.button("Uniquement les principaux").clicked() {
                     let mut vus = HashSet::new();
                     for c in revue.candidats.iter_mut() {
-                        c.coche = vus.insert(c.groupe.clone()) || c.groupe == "(fichiers isolés)";
+                        let principal =
+                            vus.insert(c.groupe.clone()) || c.groupe == "(fichiers isolés)";
+                        c.coche = principal && !c.doublon;
                     }
                 }
             });
@@ -1334,7 +1182,7 @@ impl App {
                         }
                         ui.push_id(i, |ui| {
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut c.coche, "");
+                                ui.add_enabled(!c.doublon, egui::Checkbox::new(&mut c.coche, ""));
                                 ui.add_enabled(
                                     c.coche,
                                     egui::TextEdit::singleline(&mut c.nom).desired_width(220.0),
@@ -1346,6 +1194,13 @@ impl App {
                                     .unwrap_or_default();
                                 ui.label(RichText::new(rel).small().color(p.fg_muted))
                                     .on_hover_text(c.exe.display().to_string());
+                                if c.doublon {
+                                    ui.label(
+                                        RichText::new("Déjà dans la bibliothèque")
+                                            .small()
+                                            .color(p.accent),
+                                    );
+                                }
                             });
                         });
                     }
@@ -1590,7 +1445,7 @@ impl App {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                         for t in &jeu.tags {
-                            if puce(ui, &format!("{t}  ✕"), true)
+                            if puce(ui, &format!("{t}  ×"), true)
                                 .on_hover_text("Retirer ce tag")
                                 .clicked()
                             {
@@ -1708,8 +1563,8 @@ impl App {
                         if (ui.button("Renommer").clicked() || entree) && !texte.trim().is_empty() {
                             let (a, n) = (ancien.clone(), texte.trim().to_string());
                             action = Some(Box::new(move |app, _| {
-                                if app.filtre_tag.as_ref().is_some_and(|f| f.eq_ignore_ascii_case(&a)) {
-                                    app.filtre_tag = Some(n.clone());
+                                if app.section == Section::Collection(a.clone()) {
+                                    app.section = Section::Collection(n.clone());
                                 }
                                 app.bib.config.renommer_tag(&a, &n);
                                 app.sauver();
@@ -1954,6 +1809,26 @@ fn infobulle_jeu(ui: &mut egui::Ui, jeu: &Jeu) {
     );
 }
 
+/// Entrées de modification d'un jeu, communes au menu et au panneau de détail.
+fn entrees_modifier(ui: &mut egui::Ui, jeu: &Jeu, actions: &mut Vec<Action>) {
+    let id = jeu.id;
+    let mut entree = |ui: &mut egui::Ui, libelle: &str, action: Action| {
+        if ui.button(libelle).clicked() {
+            actions.push(action);
+            ui.close();
+        }
+    };
+    entree(ui, "🏷  Tags…", Action::EditerTags(id));
+    entree(ui, "📝  Statut et notes…", Action::EditerNotes(id));
+    entree(ui, "✏  Renommer", Action::DebuterRenommage(id));
+    entree(ui, "🖼  Modifier l'icône…", Action::ChangerIcone(id));
+    if jeu.icone_perso.is_some() {
+        entree(ui, "↺  Rétablir l'icône d'origine", Action::RetablirIcone(id));
+    }
+    entree(ui, "🖼  Jaquette et bannière…", Action::EditerVisuels(id));
+    entree(ui, "⚙  Arguments de lancement…", Action::EditerArguments(id));
+}
+
 fn menu_jeu(ui: &mut egui::Ui, jeu: &Jeu, actions: &mut Vec<Action>) {
     let p = theme::p();
     let id = jeu.id;
@@ -1979,35 +1854,8 @@ fn menu_jeu(ui: &mut egui::Ui, jeu: &Jeu, actions: &mut Vec<Action>) {
         actions.push(Action::BasculerFavori(id));
         ui.close();
     }
-    if ui.button("🏷  Tags…").clicked() {
-        actions.push(Action::EditerTags(id));
-        ui.close();
-    }
-    if ui.button("📝  Statut et notes…").clicked() {
-        actions.push(Action::EditerNotes(id));
-        ui.close();
-    }
     ui.separator();
-    if ui.button("✏  Renommer").clicked() {
-        actions.push(Action::DebuterRenommage(id));
-        ui.close();
-    }
-    if ui.button("🖼  Modifier l'icône…").clicked() {
-        actions.push(Action::ChangerIcone(id));
-        ui.close();
-    }
-    if jeu.icone_perso.is_some() && ui.button("↺  Rétablir l'icône d'origine").clicked() {
-        actions.push(Action::RetablirIcone(id));
-        ui.close();
-    }
-    if ui.button("🖼  Jaquette et bannière…").clicked() {
-        actions.push(Action::EditerVisuels(id));
-        ui.close();
-    }
-    if ui.button("⚙  Arguments de lancement…").clicked() {
-        actions.push(Action::EditerArguments(id));
-        ui.close();
-    }
+    entrees_modifier(ui, jeu, actions);
     ui.separator();
     if ui.button("➖  Retirer du launcher").clicked() {
         actions.push(Action::DemanderRetrait(id));
@@ -2026,6 +1874,8 @@ fn menu_jeu(ui: &mut egui::Ui, jeu: &Jeu, actions: &mut Vec<Action>) {
 fn interactions_jeu(reponse: egui::Response, jeu: &Jeu, actions: &mut Vec<Action>) {
     if reponse.double_clicked() {
         actions.push(Action::Lancer(jeu.id));
+    } else if reponse.clicked() {
+        actions.push(Action::Selectionner(jeu.id));
     }
     let survol = reponse.hovered() || reponse.context_menu_opened();
     let reponse = reponse.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -2038,8 +1888,8 @@ fn interactions_jeu(reponse: egui::Response, jeu: &Jeu, actions: &mut Vec<Action
 }
 
 fn titre_section(ui: &mut egui::Ui, texte: &str) {
-    ui.label(RichText::new(texte).size(18.0).family(theme::gras()));
-    ui.add_space(6.0);
+    ui.label(RichText::new(texte).size(theme::POLICE_SECTION).family(theme::gras()));
+    ui.add_space(theme::ESPACE_S);
 }
 
 /// Petite étiquette arrondie cliquable (filtres, tags).
@@ -2053,7 +1903,7 @@ fn puce(ui: &mut egui::Ui, texte: &str, actif: bool) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(texte).color(encre))
             .fill(fond)
-            .corner_radius(CornerRadius::same(14)),
+            .corner_radius(CornerRadius::same(theme::RAYON_PILULE)),
     )
 }
 
@@ -2061,9 +1911,8 @@ fn carte(ui: &mut egui::Ui, titre: &str, contenu: impl FnOnce(&mut egui::Ui)) {
     let p = theme::p();
     egui::Frame::new()
         .fill(p.bg_menu)
-        .stroke(Stroke::new(1.0, p.bordure))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(16))
+        .corner_radius(CornerRadius::same(theme::RAYON_L))
+        .inner_margin(egui::Margin::same(theme::ESPACE_L as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -2111,9 +1960,8 @@ impl eframe::App for App {
         self.suivre_visuels();
         self.suivre_lot();
         self.suivre_maj();
-        self.raccourcis_clavier(&ctx);
-
         let mut actions = Vec::new();
+        self.raccourcis_clavier(&ctx, &mut actions);
         if self.mode_tv && self.dialogue.is_none() {
             self.clavier_tv(&ctx);
         }
@@ -2122,9 +1970,14 @@ impl eframe::App for App {
         if self.mode_tv {
             self.vue_tv(ui, &mut actions);
         } else {
-            egui::Panel::top("entete")
+            self.barre_laterale(ui, &mut actions);
+            egui::Panel::top("barre_haut")
                 .frame(egui::Frame::new().fill(p.bg_main))
-                .show(ui, |ui| self.entete(ui, &mut actions));
+                .show_separator_line(false)
+                .show(ui, |ui| self.barre_haut(ui, &mut actions));
+            if self.vue == Vue::Bibliotheque {
+                self.panneau_detail(ui, &mut actions);
+            }
 
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(p.bg_main))
@@ -2135,11 +1988,13 @@ impl eframe::App for App {
                 });
         }
 
+        self.fenetres(&ctx);
+        self.fenetre_palette(&ctx, &mut actions);
+        self.fenetre_aide(&ctx);
+
         for a in actions {
             self.executer(a, &ctx);
         }
-
-        self.fenetres(&ctx);
         self.afficher_notification(&ctx);
     }
 

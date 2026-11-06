@@ -100,6 +100,8 @@ impl App {
 
                 carte(ui, "Mises à jour", |ui| self.carte_maj(ui, &ctx));
 
+                carte(ui, "Raccourcis clavier", |ui| palette::tableau_raccourcis(ui));
+
                 carte(ui, "Données", |ui| {
                     ui.label(RichText::new("Configuration, icônes personnalisées, sauvegardes et cache :").color(p.fg_muted));
                     ui.label(RichText::new(self.bib.dossiers.racine.display().to_string()).color(p.accent).strong());
