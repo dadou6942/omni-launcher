@@ -8,7 +8,7 @@
 use crate::config::{Dossiers, cle_chemin};
 use crate::platform;
 use eframe::egui;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,10 @@ pub const TAILLE_ICONE: u32 = 256;
 /// Tailles maximales en mémoire : la moitié de 600x900 et de 1920x620.
 const JAQUETTE_MAX: (u32, u32) = (300, 450);
 const BANNIERE_MAX: (u32, u32) = (960, 310);
+/// Pour la jaquette mise en avant du plein écran.
+const GRANDE_JAQUETTE_MAX: (u32, u32) = (600, 900);
+/// Grandes jaquettes gardées en mémoire vidéo.
+const GRANDES_JAQUETTES_MAX: usize = 12;
 
 /// Les différentes images d'un jeu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,7 +32,13 @@ pub enum Genre {
 
 const GENRES: [Genre; 3] = [Genre::Icone, Genre::Jaquette, Genre::Banniere];
 
-type Cle = (u64, Genre);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Taille {
+    Normale,
+    Grande,
+}
+
+type Cle = (u64, Genre, Taille);
 
 #[derive(Clone)]
 enum Source {
@@ -60,6 +70,8 @@ pub struct ChargeurIcones {
     reception: Receiver<Reponse>,
     etats: HashMap<Cle, Etat>,
     generations: HashMap<Cle, u32>,
+    /// Grandes jaquettes chargées, de la plus ancienne à la plus récente.
+    grandes: VecDeque<u64>,
     dossier_icones: PathBuf,
     dossier_jaquettes: PathBuf,
 }
@@ -116,6 +128,7 @@ impl ChargeurIcones {
             reception,
             etats: HashMap::new(),
             generations: HashMap::new(),
+            grandes: VecDeque::new(),
             dossier_icones: dossiers.icones.clone(),
             dossier_jaquettes: dossiers.jaquettes.clone(),
         }
@@ -129,13 +142,16 @@ impl ChargeurIcones {
             }
             let etat = match r.image {
                 Some(img) => Etat::Pret(ctx.load_texture(
-                    format!("image-{}-{:?}-{}", r.cle.0, r.cle.1, r.generation),
+                    format!("image-{:?}-{}", r.cle, r.generation),
                     img,
                     egui::TextureOptions::LINEAR,
                 )),
                 None => Etat::Echec,
             };
             self.etats.insert(r.cle, etat);
+            if r.cle.2 == Taille::Grande {
+                self.retenir_grande(r.cle.0);
+            }
         }
     }
 
@@ -150,7 +166,7 @@ impl ChargeurIcones {
             Some(nom) => Source::Perso(self.dossier_icones.join(nom)),
             None => Source::Exe(exe.to_path_buf()),
         };
-        self.obtenir((id, Genre::Icone), source)
+        self.obtenir((id, Genre::Icone, Taille::Normale), source)
     }
 
     /// Texture d'une jaquette ou d'une bannière, comme [`Self::texture`].
@@ -160,7 +176,24 @@ impl ChargeurIcones {
             Genre::Jaquette | Genre::Icone => JAQUETTE_MAX,
         };
         let source = Source::Visuel(self.dossier_jaquettes.join(fichier), max);
-        self.obtenir((id, genre), source)
+        self.obtenir((id, genre, Taille::Normale), source)
+    }
+
+    /// Jaquette en haute définition. Seules les dernières restent en mémoire :
+    /// une bibliothèque entière à cette taille pèserait plus d'un gigaoctet.
+    pub fn grande_jaquette(&mut self, id: u64, fichier: &str) -> Option<egui::TextureHandle> {
+        let source = Source::Visuel(self.dossier_jaquettes.join(fichier), GRANDE_JAQUETTE_MAX);
+        self.obtenir((id, Genre::Jaquette, Taille::Grande), source)
+    }
+
+    fn retenir_grande(&mut self, id: u64) {
+        self.grandes.retain(|&g| g != id);
+        self.grandes.push_back(id);
+        while self.grandes.len() > GRANDES_JAQUETTES_MAX {
+            if let Some(ancien) = self.grandes.pop_front() {
+                self.etats.remove(&(ancien, Genre::Jaquette, Taille::Grande));
+            }
+        }
     }
 
     fn obtenir(&mut self, cle: Cle, source: Source) -> Option<egui::TextureHandle> {
@@ -181,9 +214,11 @@ impl ChargeurIcones {
 
     /// Force le rechargement d'une image (après modification).
     pub fn invalider_genre(&mut self, id: u64, genre: Genre) {
-        let cle = (id, genre);
-        self.etats.remove(&cle);
-        *self.generations.entry(cle).or_insert(0) += 1;
+        for taille in [Taille::Normale, Taille::Grande] {
+            let cle = (id, genre, taille);
+            self.etats.remove(&cle);
+            *self.generations.entry(cle).or_insert(0) += 1;
+        }
     }
 
     /// Force le rechargement de toutes les images d'un jeu.
@@ -195,7 +230,7 @@ impl ChargeurIcones {
 
     pub fn tout_invalider(&mut self) {
         let cles: Vec<Cle> = self.etats.keys().copied().collect();
-        for (id, genre) in cles {
+        for (id, genre, _) in cles {
             self.invalider_genre(id, genre);
         }
     }

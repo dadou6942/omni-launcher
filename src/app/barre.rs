@@ -27,7 +27,9 @@ fn entree(
         peintre.rect_filled(rect, arrondi, p.bg_btn);
     }
     let couleur = if actif { p.accent } else { p.fg };
-    let x_icone = rect.left() + (LARGEUR_REPLIEE - theme::ESPACE_L) / 2.0 - theme::ESPACE_S;
+    // Centre de la rangée quand la barre est repliée, et même place dépliée
+    // pour que les icônes ne bougent pas pendant l'animation.
+    let x_icone = rect.left() + LARGEUR_REPLIEE / 2.0 - theme::ESPACE_S;
     peintre.text(
         egui::pos2(x_icone, rect.center().y),
         Align2::CENTER_CENTER,
@@ -37,7 +39,7 @@ fn entree(
     );
     if !replie {
         peintre.text(
-            egui::pos2(x_icone + theme::ESPACE_L + theme::ESPACE_S, rect.center().y),
+            egui::pos2(x_icone + theme::ESPACE_XL, rect.center().y),
             Align2::LEFT_CENTER,
             libelle,
             FontId::proportional(theme::POLICE_CORPS),

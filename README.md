@@ -134,7 +134,7 @@ La récupération groupée prend le premier résultat de chaque jeu. Si une imag
 
 La clé est enregistrée en clair dans `donnees\cle_steamgriddb.txt`, hors de `config.json` : elle ne figure ni dans les sauvegardes ni dans les exports. Pensez-y si vous copiez ce dossier, par exemple sur une clé USB partagée.
 
-En plein écran, le menu XMB montre la jaquette du jeu focalisé à droite et sa bannière en fond. Le style Grille passe au format portrait dès qu'un jeu a une jaquette.
+En plein écran, le menu XMB montre la jaquette du jeu sélectionné en grand et sa bannière en fond. Le style Grille passe au format portrait dès qu'un jeu a une jaquette.
 
 ### Temps de jeu
 
@@ -166,14 +166,17 @@ Au lancement d'un jeu, le launcher se réduit et repère les processus dont l'ex
 
 Le menu se pilote entièrement à la manette, y compris les paramètres, le scan de dossiers et la saisie de texte. La catégorie **Quitter** ramène au mode bureau ou ferme le launcher.
 
+Les jeux défilent à l'horizontale, avec la jaquette du jeu sélectionné en grand au centre. Les menus (paramètres, options d'un jeu) restent verticaux.
+
 | Action | Xbox | PlayStation | Clavier |
 |---|---|---|---|
-| Naviguer | Croix ou stick gauche | Croix ou stick gauche | Flèches |
+| Parcourir les jeux | Gauche / droite, à la croix ou au stick | Gauche / droite, à la croix ou au stick | Flèches gauche et droite |
+| Parcourir un menu | Haut / bas | Haut / bas | Flèches haut et bas |
 | Lancer ou valider | A | Croix | `Entrée` |
 | Retour | B | Rond | `Échap` |
 | Options du jeu | Y | Triangle | `F` |
 | Recherche | X | Carré | `R` |
-| Changer de catégorie | LB / RB | L1 / R1 | `Q` / `E` |
+| Changer de catégorie | LB / RB, ou haut / bas sur les jeux | L1 / R1, ou haut / bas sur les jeux | `Q` / `E` |
 | Paramètres | Menu | Options | `P` |
 
 Sur le clavier virtuel : le bouton de validation tape la touche, Recherche efface, Options ajoute un espace, les gâchettes passent en majuscule, Paramètres valide et Retour annule.

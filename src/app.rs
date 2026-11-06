@@ -1018,12 +1018,23 @@ impl App {
 
     /// Dessine la jaquette d'un jeu, ou à défaut son icône sur une carte.
     fn dessiner_jaquette(&mut self, ui: &egui::Ui, jeu: &Jeu, zone: egui::Rect, manquant: bool) {
-        let p = theme::p();
-        let arrondi = CornerRadius::same(8);
         let texture = jeu
             .jaquette
             .as_deref()
             .and_then(|f| self.icones.visuel(jeu.id, Genre::Jaquette, f));
+        self.dessiner_couverture(ui, jeu, zone, manquant, texture);
+    }
+
+    fn dessiner_couverture(
+        &mut self,
+        ui: &egui::Ui,
+        jeu: &Jeu,
+        zone: egui::Rect,
+        manquant: bool,
+        texture: Option<egui::TextureHandle>,
+    ) {
+        let p = theme::p();
+        let arrondi = CornerRadius::same(theme::RAYON_M);
         match texture {
             Some(t) => {
                 let uv = icons::uv_couvrir(t.size_vec2(), zone.size());

@@ -29,6 +29,18 @@ const ACTIONS_REVUE: usize = 5;
 
 const ECART_CATEGORIES: f32 = 170.0;
 const HAUTEUR_ELEMENT: f32 = 76.0;
+/// Raideur du défilement : un appui s'installe en un peu plus de 200 ms.
+const RAIDEUR_DEFILEMENT: f32 = 18.0;
+/// En deçà de ces écarts, le défilement est considéré comme arrivé.
+const ECART_ARRIVE: f32 = 0.002;
+const VITESSE_ARRIVEE: f32 = 0.02;
+/// Taille des jaquettes voisines par rapport à celle mise en avant.
+const ECHELLE_VOISINE: f32 = 0.58;
+const ECART_JAQUETTES: f32 = 28.0;
+/// Hauteur plancher d'une jaquette, sur une toute petite fenêtre.
+const HAUTEUR_JAQUETTE_MIN: f32 = 240.0;
+/// Place réservée sous la jaquette pour le nom et les détails du jeu.
+const HAUTEUR_LEGENDE: f32 = 86.0;
 const HAUTEUR_BARRE_AIDE: f32 = 64.0;
 /// Les vagues sont lentes : 30 images par seconde suffisent et ménagent le processeur.
 const INTERVALLE_VAGUES: Duration = Duration::from_millis(33);
@@ -84,6 +96,11 @@ pub(super) struct EtatXmb {
     focus_voulu: Option<u64>,
     /// Dernier dossier lu, pour ne pas relire le disque à chaque image.
     fichiers: Option<(Option<PathBuf>, Vec<EntreeFichier>)>,
+    /// Position affichée de la liste, qui rejoint le focus en continu.
+    pos_liste: Lisseur,
+    pos_categorie: Lisseur,
+    /// Liste affichée : en changer replace la position sans animation.
+    cle_liste: (usize, usize),
 }
 
 impl EtatXmb {
@@ -157,6 +174,50 @@ fn deplacer_focus(focus: usize, n: usize, delta: isize) -> usize {
     (focus as isize + delta).clamp(0, n as isize - 1) as usize
 }
 
+/// Position qui rejoint sa cible comme un ressort à amortissement critique.
+/// Quand une direction est maintenue, les répétitions de la manette deviennent
+/// une vitesse régulière : une animation à durée fixe repartirait à chacune
+/// d'elles, et un lissage simple garderait des à-coups.
+#[derive(Debug, Default, Clone, Copy)]
+struct Lisseur {
+    pos: f32,
+    vitesse: f32,
+}
+
+impl Lisseur {
+    fn a(pos: f32) -> Self {
+        Self { pos, vitesse: 0.0 }
+    }
+
+    /// Solution exacte du ressort : stable quelle que soit la durée de l'image.
+    fn avancer(&mut self, cible: f32, dt: f32) {
+        let amorti = (-RAIDEUR_DEFILEMENT * dt).exp();
+        let ecart = self.pos - cible;
+        let terme = (self.vitesse + RAIDEUR_DEFILEMENT * ecart) * dt;
+        self.vitesse = (self.vitesse - RAIDEUR_DEFILEMENT * terme) * amorti;
+        self.pos = cible + (ecart + terme) * amorti;
+        if (cible - self.pos).abs() < ECART_ARRIVE && self.vitesse.abs() < VITESSE_ARRIVEE {
+            *self = Self::a(cible);
+        }
+    }
+}
+
+/// Une liste de jeux défile à l'horizontale ; les menus restent verticaux.
+fn est_carrousel(elements: &[Element]) -> bool {
+    !elements.is_empty() && elements.iter().all(|e| matches!(e.visuel, Visuel::Jeu(_)))
+}
+
+/// Décalage horizontal et échelle d'une jaquette, selon sa distance au focus.
+fn place_carrousel(distance: f32, largeur: f32) -> (f32, f32) {
+    let proche = distance.abs().min(1.0);
+    let echelle = melange(1.0, ECHELLE_VOISINE, proche);
+    let voisine = largeur * ECHELLE_VOISINE;
+    let premier_pas = (largeur + voisine) / 2.0 + ECART_JAQUETTES;
+    let decalage = melange(0.0, premier_pas, proche)
+        + (distance.abs() - 1.0).max(0.0) * (voisine + ECART_JAQUETTES);
+    (decalage * distance.signum(), echelle)
+}
+
 /// Lit une couleur « ff8800 » ou « #FF8800 ».
 fn analyser_couleur(texte: &str) -> Option<[u8; 3]> {
     let t = texte.trim().trim_start_matches('#');
@@ -179,6 +240,7 @@ enum Bouton {
     Y,
     Gachettes,
     Start,
+    Direction,
 }
 
 /// Dessine le glyphe d'un bouton et renvoie sa largeur.
@@ -198,6 +260,8 @@ fn glyphe(peintre: &egui::Painter, centre: egui::Pos2, b: Bouton, famille: Optio
         largeur
     };
     match (famille, b) {
+        (None, Bouton::Direction) => texte_pilule("Flèches"),
+        (Some(_), Bouton::Direction) => texte_pilule("Stick"),
         (None, Bouton::A) => texte_pilule("Entrée"),
         (None, Bouton::B) => texte_pilule("Échap"),
         (None, Bouton::X) => texte_pilule("R"),
@@ -394,7 +458,20 @@ impl App {
             etat.definir_focus(nouveau);
             nouveau != focus
         };
+        let carrousel = est_carrousel(&elements);
         match c {
+            Commande::Gauche | Commande::Droite if carrousel => {
+                let delta = if c == Commande::Gauche { -1 } else { 1 };
+                if bouger(&mut self.xmb, delta) {
+                    self.son(Son::Deplacement);
+                }
+            }
+            Commande::Haut | Commande::Bas if carrousel => {
+                if !a_pile {
+                    self.xmb.changer_categorie(if c == Commande::Haut { -1 } else { 1 });
+                    self.son(Son::Deplacement);
+                }
+            }
             Commande::Haut | Commande::Bas => {
                 let delta = if c == Commande::Haut { -1 } else { 1 };
                 if bouger(&mut self.xmb, delta) {
@@ -793,10 +870,9 @@ impl App {
         zone: egui::Rect,
         elements: &[Element],
         focus: usize,
-        cle: egui::Id,
     ) {
         let p = theme::p();
-        let pos = ui.ctx().animate_value_with_time(cle, focus as f32, theme::DUREE_NORMALE);
+        let pos = self.xmb.pos_liste.pos;
         let peintre = ui.painter_at(zone);
         let x = zone.center().x - 80.0;
         let y_focus = zone.top() + HAUTEUR_ELEMENT * 1.6;
@@ -868,32 +944,118 @@ impl App {
         }
     }
 
-    /// Jaquette du jeu focalisé, à droite, et bannière en fond d'écran.
-    fn dessiner_apercu(&mut self, ui: &egui::Ui, peintre: &egui::Painter, zone: egui::Rect, e: Option<&Element>) -> bool {
+    /// Bannière du jeu focalisé, en fond d'écran.
+    fn dessiner_banniere(&mut self, ui: &egui::Ui, peintre: &egui::Painter, zone: egui::Rect, e: Option<&Element>) {
         let Some(Visuel::Jeu(id)) = e.map(|e| e.visuel) else {
-            return false;
+            return;
         };
-        let Some(jeu) = self.bib.jeu(id).cloned() else {
-            return false;
-        };
-        let p = theme::p();
-        if let Some(t) = jeu.banniere.as_deref().and_then(|f| self.icones.visuel(id, Genre::Banniere, f)) {
+        let fichier = self.bib.jeu(id).and_then(|j| j.banniere.clone());
+        let texture = fichier.and_then(|f| self.icones.visuel(id, Genre::Banniere, &f));
+        if let Some(t) = texture {
             let uv = icons::uv_couvrir(t.size_vec2(), zone.size());
             egui::Image::new(&t).uv(uv).paint_at(ui, zone);
-            peintre.rect_filled(zone, CornerRadius::ZERO, voile(p.bg_main, 215));
+            peintre.rect_filled(zone, CornerRadius::ZERO, voile(theme::p().bg_main, 215));
         }
-        if let Some(t) = jeu.jaquette.as_deref().and_then(|f| self.icones.visuel(id, Genre::Jaquette, f)) {
-            let hauteur = (zone.height() * 0.46).min(420.0);
-            let cadre = egui::Rect::from_min_size(
-                egui::pos2(zone.right() - hauteur / RATIO_JAQUETTE - theme::ESPACE_XXL, zone.top() + 190.0),
-                Vec2::new(hauteur / RATIO_JAQUETTE, hauteur),
+    }
+
+    fn dessiner_jaquette_carrousel(
+        &mut self,
+        ui: &egui::Ui,
+        peintre: &egui::Painter,
+        id: u64,
+        cadre: egui::Rect,
+        distance: f32,
+    ) {
+        let p = theme::p();
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
+            return;
+        };
+        let manquant = self.bib.manquants.contains(&id);
+        // La haute définition n'est demandée qu'à l'arrêt, sinon un défilement
+        // rapide lancerait le décodage de toute la bibliothèque.
+        let a_l_arret = distance.abs() < 0.02;
+        let fichier = jeu.jaquette.as_deref();
+        let grande = fichier.filter(|_| a_l_arret).and_then(|f| self.icones.grande_jaquette(id, f));
+        let texture = grande.or_else(|| fichier.and_then(|f| self.icones.visuel(id, Genre::Jaquette, f)));
+        self.dessiner_couverture(ui, &jeu, cadre, manquant, texture);
+
+        let proximite = (1.0 - distance.abs()).clamp(0.0, 1.0);
+        let opacite = (150.0 * (1.0 - proximite)) as u8;
+        if opacite > 0 {
+            peintre.rect_filled(cadre, CornerRadius::same(theme::RAYON_M), voile(p.bg_main, opacite));
+        }
+        marquer_statut(peintre, cadre.left_top() + Vec2::splat(theme::ESPACE_L), jeu.statut);
+        if jeu.favori {
+            peintre.text(
+                cadre.right_top() + Vec2::new(-theme::ESPACE_S, theme::ESPACE_S),
+                Align2::RIGHT_TOP,
+                "⭐",
+                FontId::proportional(theme::POLICE_XMB),
+                p.accent,
             );
-            egui::Image::new(&t)
-                .uv(icons::uv_couvrir(t.size_vec2(), cadre.size()))
-                .corner_radius(CornerRadius::same(theme::RAYON_L))
-                .paint_at(ui, cadre);
         }
-        true
+        if proximite > 0.05 {
+            peintre.rect_stroke(
+                cadre,
+                CornerRadius::same(theme::RAYON_M),
+                Stroke::new(3.0 * proximite, p.accent.gamma_multiply(proximite)),
+                egui::StrokeKind::Outside,
+            );
+        }
+    }
+
+    /// Jaquettes en ligne : celle du jeu focalisé au centre, en grand.
+    fn dessiner_carrousel(&mut self, ui: &egui::Ui, zone: egui::Rect, elements: &[Element], focus: usize) {
+        let p = theme::p();
+        let pos = self.xmb.pos_liste.pos;
+        let peintre = ui.painter_at(zone);
+        // La marge du haut laisse la place au contour de la jaquette.
+        let hauteur = (zone.height() - HAUTEUR_LEGENDE - theme::ESPACE_M).max(HAUTEUR_JAQUETTE_MIN);
+        let largeur = hauteur / RATIO_JAQUETTE;
+        let centre = egui::pos2(zone.center().x, zone.top() + theme::ESPACE_M + hauteur / 2.0);
+
+        // Seules les jaquettes à l'écran sont dessinées, les plus proches en dernier.
+        let visibles = (zone.width() / 2.0 / (largeur * ECHELLE_VOISINE + ECART_JAQUETTES)).ceil() as isize + 2;
+        let debut = (pos.round() as isize - visibles).max(0) as usize;
+        let fin = ((pos.round() as isize + visibles + 1).max(0) as usize).min(elements.len());
+        let mut ordre: Vec<usize> = (debut..fin).collect();
+        ordre.sort_by(|a, b| {
+            let d = |i: usize| (i as f32 - pos).abs();
+            d(*b).total_cmp(&d(*a))
+        });
+        for i in ordre {
+            let Visuel::Jeu(id) = elements[i].visuel else {
+                continue;
+            };
+            let distance = i as f32 - pos;
+            let (decalage, echelle) = place_carrousel(distance, largeur);
+            let cadre = egui::Rect::from_center_size(
+                centre + Vec2::new(decalage, 0.0),
+                Vec2::new(largeur, hauteur) * echelle,
+            );
+            self.dessiner_jaquette_carrousel(ui, &peintre, id, cadre, distance);
+        }
+
+        let Some(Element { titre, visuel: Visuel::Jeu(id), .. }) = elements.get(focus) else {
+            return;
+        };
+        let bas = centre.y + hauteur / 2.0 + theme::ESPACE_L;
+        peintre.text(
+            egui::pos2(centre.x, bas),
+            Align2::CENTER_TOP,
+            titre,
+            FontId::new(theme::POLICE_TITRE, theme::gras()),
+            p.fg,
+        );
+        if let Some(jeu) = self.bib.jeu(*id) {
+            peintre.text(
+                egui::pos2(centre.x, bas + 40.0),
+                Align2::CENTER_TOP,
+                resume_jeu(jeu),
+                FontId::proportional(theme::POLICE_CORPS),
+                p.fg_muted,
+            );
+        }
     }
 
     fn dessiner_aide(&self, peintre: &egui::Painter, zone: egui::Rect, e: Option<&Element>) {
@@ -925,6 +1087,9 @@ impl App {
                 aides.push((Bouton::B, "Retour"));
             }
             aides.push((Bouton::Gachettes, "Catégories"));
+            if est_jeu {
+                aides.push((Bouton::Direction, "Défiler"));
+            }
             aides.push((Bouton::Start, "Paramètres"));
         }
 
@@ -987,21 +1152,30 @@ impl App {
         }
         let temps = if anime { ctx.input(|i| i.time) as f32 } else { 0.0 };
 
+        let cle = (self.xmb.categorie, self.xmb.pile.len());
+        if self.xmb.cle_liste != cle {
+            self.xmb.cle_liste = cle;
+            self.xmb.pos_liste = Lisseur::a(focus as f32);
+        }
+        let dt = ctx.input(|i| i.stable_dt).min(0.05);
+        let cible_categorie = self.xmb.categorie as f32;
+        self.xmb.pos_liste.avancer(focus as f32, dt);
+        self.xmb.pos_categorie.avancer(cible_categorie, dt);
+        if self.xmb.pos_liste.pos != focus as f32 || self.xmb.pos_categorie.pos != cible_categorie {
+            ctx.request_repaint(); // Le défilement passe avant le plafond du fond animé.
+        }
+        let carrousel = est_carrousel(&elements);
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p.bg_main))
             .show(ui, |ui| {
                 let zone = ui.max_rect();
                 let peintre = ui.painter_at(zone);
                 let courant = elements.get(focus);
-                self.dessiner_apercu(ui, &peintre, zone, courant);
+                self.dessiner_banniere(ui, &peintre, zone, courant);
                 fond::peindre(&peintre, zone, p.accent, temps);
 
-                let pos = ctx.animate_value_with_time(
-                    egui::Id::unique("xmb_categorie"),
-                    self.xmb.categorie as f32,
-                    theme::DUREE_NORMALE,
-                );
-                self.dessiner_categories(&peintre, zone, pos);
+                self.dessiner_categories(&peintre, zone, self.xmb.pos_categorie.pos);
                 self.dessiner_entete(&peintre, zone);
 
                 let mut haut = zone.top() + 170.0;
@@ -1019,8 +1193,11 @@ impl App {
                     egui::pos2(zone.left(), haut),
                     egui::pos2(zone.right(), zone.bottom() - HAUTEUR_BARRE_AIDE),
                 );
-                let cle = ("xmb_liste", self.xmb.categorie, self.xmb.pile.len());
-                self.dessiner_liste(ui, liste, &elements, focus, egui::Id::unique(cle));
+                if carrousel {
+                    self.dessiner_carrousel(ui, liste, &elements, focus);
+                } else {
+                    self.dessiner_liste(ui, liste, &elements, focus);
+                }
 
                 self.dessiner_aide(&peintre, zone, courant);
                 if let Some(clavier) = &self.xmb.clavier {
@@ -1055,6 +1232,81 @@ pub(super) fn cocher_principaux(candidats: &mut [Candidat]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn element(visuel: Visuel) -> Element {
+        Element {
+            titre: String::new(),
+            detail: String::new(),
+            visuel,
+            effet: Effet::Aucun,
+        }
+    }
+
+    #[test]
+    fn le_lissage_garde_une_vitesse_reguliere_sous_une_cible_qui_avance() {
+        // Une répétition toutes les 110 ms, affichée à 60 images par seconde.
+        let dt = 1.0 / 60.0;
+        let (mut l, mut cible, mut vitesses) = (Lisseur::default(), 0.0, Vec::new());
+        for image in 0..240 {
+            if image % 7 == 0 {
+                cible += 1.0;
+            }
+            let avant = l.pos;
+            l.avancer(cible, dt);
+            assert!(l.pos >= avant, "jamais de recul");
+            vitesses.push(l.pos - avant);
+        }
+        // Une fois lancé, le défilement ne s'arrête jamais entre deux répétitions.
+        let regime = &vitesses[60..];
+        let lente = regime.iter().cloned().fold(f32::INFINITY, f32::min);
+        let rapide = regime.iter().cloned().fold(0.0, f32::max);
+        assert!(lente > rapide * 0.5, "{lente} contre {rapide}");
+    }
+
+    #[test]
+    fn le_lissage_arrive_exactement_et_sans_depasser() {
+        let (mut l, cible) = (Lisseur::default(), 3.0);
+        let mut images = 0;
+        while l.pos != cible {
+            l.avancer(cible, 1.0 / 60.0);
+            assert!(l.pos <= cible);
+            images += 1;
+            assert!(images < 120, "n'arrive jamais");
+        }
+    }
+
+    #[test]
+    fn le_lissage_reste_stable_sur_une_image_lente() {
+        let mut l = Lisseur::a(0.0);
+        l.avancer(5.0, 0.05);
+        assert!(l.pos > 0.0 && l.pos < 5.0, "{}", l.pos);
+    }
+
+    #[test]
+    fn seules_les_listes_de_jeux_sont_en_carrousel() {
+        assert!(est_carrousel(&[element(Visuel::Jeu(1)), element(Visuel::Jeu(2))]));
+        assert!(!est_carrousel(&[element(Visuel::Jeu(1)), element(Visuel::Glyphe("x"))]));
+        assert!(!est_carrousel(&[]));
+    }
+
+    #[test]
+    fn le_carrousel_garde_l_ordre_sans_chevauchement() {
+        let largeur = 400.0;
+        let (centre, echelle) = place_carrousel(0.0, largeur);
+        assert_eq!((centre, echelle), (0.0, 1.0));
+        let (droite, _) = place_carrousel(1.0, largeur);
+        let (gauche, _) = place_carrousel(-1.0, largeur);
+        assert_eq!(gauche, -droite);
+        assert!(droite >= largeur * (1.0 + ECHELLE_VOISINE) / 2.0);
+
+        // Le mouvement reste continu et monotone entre deux positions.
+        let mut precedent = f32::NEG_INFINITY;
+        for i in -300..=300 {
+            let (x, _) = place_carrousel(i as f32 / 100.0, largeur);
+            assert!(x > precedent);
+            precedent = x;
+        }
+    }
 
     #[test]
     fn le_focus_reste_dans_la_liste() {

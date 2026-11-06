@@ -170,7 +170,7 @@ La colonne « Aujourd'hui » indique où se trouve la fonctionnalité dans la v2
 ### Mode plein écran XMB
 
 - [x] Barre de catégories : Jeux, Récents, Favoris, Collections, Paramètres, Quitter
-- [x] Liste verticale, élément focalisé agrandi avec nom et infos secondaires
+- [x] Liste verticale pour les menus, carrousel horizontal de jaquettes pour les jeux, élément focalisé agrandi avec nom et infos secondaires
 - [x] Fond en vagues lié au thème, désactivable
 - [x] Horloge et barre d'aide des boutons
 - [~] Mapping : A lancer, B retour, Y options, X recherche, LB/RB catégories, Start paramètres
@@ -185,7 +185,7 @@ La colonne « Aujourd'hui » indique où se trouve la fonctionnalité dans la v2
 
 ## 3. Limites connues
 
-- **Manette physique** : pas essayée. Les glyphes PlayStation ont été vus à l'écran en les forçant dans les réglages ; la détection automatique reste à vérifier avec une vraie manette Sony.
+- **Manette physique** : une manette branchée a été détectée et a affiché les boutons PlayStation automatiquement, mais les parcours complets ont été testés au clavier.
 - **Son** : le code est testé, mais personne n'a écouté le résultat.
 - **Statistiques en plein écran** : l'activité des 14 derniers jours est un total, sans le graphique du mode bureau.
 - **Fenêtres externes** : « Ouvrir l'emplacement », « Ouvrir le dossier » et « Obtenir une clé » ouvrent l'Explorateur ou le navigateur, qui se pilotent à la souris.
