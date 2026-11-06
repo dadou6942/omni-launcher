@@ -85,6 +85,7 @@ impl App {
             entree("Exporter la bibliothèque", "", Action::Exporter),
             entree("Importer une bibliothèque", "", Action::Importer),
             entree("Ouvrir le dossier des données", "", Action::OuvrirDonnees),
+            entree("Ouvrir le dossier des sauvegardes", "", Action::OuvrirSauvegardes),
             entree("Vider le cache d'icônes", "", Action::ViderCache),
             entree("Vérifier les mises à jour", "", Action::VerifierMaj),
             entree("Quitter", "", Action::Quitter),

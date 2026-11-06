@@ -54,6 +54,8 @@ impl App {
 
                 carte(ui, "Apparence", |ui| self.carte_apparence(ui, &ctx));
 
+                carte(ui, "Plein écran et manette", |ui| self.carte_plein_ecran(ui));
+
                 carte(ui, "Bibliothèque", |ui| {
                     let favoris = self.bib.config.jeux.iter().filter(|j| j.favori).count();
                     ui.label(format!("{} jeux, dont {} favoris.", self.bib.config.jeux.len(), favoris));
@@ -100,7 +102,7 @@ impl App {
 
                 carte(ui, "Mises à jour", |ui| self.carte_maj(ui, &ctx));
 
-                carte(ui, "Raccourcis clavier", |ui| palette::tableau_raccourcis(ui));
+                carte(ui, "Raccourcis clavier", palette::tableau_raccourcis);
 
                 carte(ui, "Données", |ui| {
                     ui.label(RichText::new("Configuration, icônes personnalisées, sauvegardes et cache :").color(p.fg_muted));
@@ -165,6 +167,35 @@ impl App {
                 self.sauver();
             }
         });
+    }
+
+    fn carte_plein_ecran(&mut self, ui: &mut egui::Ui) {
+        use crate::config::{Glyphes, StylePleinEcran};
+        let avant = (self.bib.config.style_plein_ecran, self.bib.config.glyphes);
+        let c = &mut self.bib.config;
+        ui.horizontal(|ui| {
+            ui.label("Style");
+            ui.selectable_value(&mut c.style_plein_ecran, StylePleinEcran::Xmb, "Menu XMB");
+            ui.selectable_value(&mut c.style_plein_ecran, StylePleinEcran::Grille, "Grille");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Boutons affichés");
+            ui.selectable_value(&mut c.glyphes, Glyphes::Auto, "Automatique");
+            ui.selectable_value(&mut c.glyphes, Glyphes::Xbox, "Xbox");
+            ui.selectable_value(&mut c.glyphes, Glyphes::PlayStation, "PlayStation");
+        });
+        let mut change = avant != (c.style_plein_ecran, c.glyphes);
+        for (champ, libelle) in [
+            (&mut c.fond_anime, "Fond animé (à désactiver si la machine est lente)"),
+            (&mut c.sons, "Sons de navigation"),
+            (&mut c.demarrer_plein_ecran, "Démarrer en plein écran"),
+            (&mut c.bascule_manette, "Passer en plein écran quand une manette est branchée"),
+        ] {
+            change |= ui.checkbox(champ, libelle).changed();
+        }
+        if change {
+            self.sauver();
+        }
     }
 
     fn carte_tags(&mut self, ui: &mut egui::Ui) {

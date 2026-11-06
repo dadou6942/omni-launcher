@@ -29,7 +29,6 @@ pub const POLICE_CORPS: f32 = 15.0;
 pub const POLICE_SECTION: f32 = 18.0;
 pub const POLICE_TITRE: f32 = 28.0;
 pub const POLICE_XMB: f32 = 22.0;
-pub const POLICE_XMB_FOCUS: f32 = 30.0;
 
 /// Durées d'animation, en secondes.
 pub const DUREE_RAPIDE: f32 = 0.15;

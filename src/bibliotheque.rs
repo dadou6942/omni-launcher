@@ -93,6 +93,11 @@ impl Bibliotheque {
     /// Jeux filtrés (recherche sur le nom et les tags) et triés. La section
     /// Récents suit toujours l'ordre des derniers lancements.
     pub fn lister(&self, filtre: Filtre<'_>) -> Vec<u64> {
+        self.lister_jeux(filtre).into_iter().map(|j| j.id).collect()
+    }
+
+    /// Comme [`Self::lister`], sans repasser par les identifiants.
+    pub fn lister_jeux(&self, filtre: Filtre<'_>) -> Vec<&Jeu> {
         let termes: Vec<String> = filtre
             .recherche
             .split_whitespace()
@@ -139,7 +144,7 @@ impl Bibliotheque {
                     .then_with(|| a.nom.to_lowercase().cmp(&b.nom.to_lowercase()))
             }),
         }
-        jeux.into_iter().map(|j| j.id).collect()
+        jeux
     }
 
     /// Sépare une liste en (favoris, autres), en gardant l'ordre.

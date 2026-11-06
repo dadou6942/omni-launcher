@@ -22,6 +22,12 @@ impl EtatTv {
     pub(super) fn entrer(&mut self) {
         self.defiler = true;
     }
+
+    /// Replace la sélection sur un jeu, à la fin d'une partie.
+    pub(super) fn retrouver_jeu(&mut self, id: u64) {
+        self.selection = Some(id);
+        self.defiler = true;
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -95,6 +101,9 @@ impl App {
 
     /// Traduit le clavier en commandes de manette.
     pub(super) fn clavier_tv(&mut self, ctx: &egui::Context) {
+        if self.clavier_physique_xmb(ctx) {
+            return;
+        }
         let correspondances = [
             (Key::ArrowUp, Commande::Haut),
             (Key::ArrowDown, Commande::Bas),
@@ -104,7 +113,9 @@ impl App {
             (Key::Space, Commande::Valider),
             (Key::Escape, Commande::Retour),
             (Key::Backspace, Commande::Retour),
-            (Key::F, Commande::Favori),
+            (Key::F, Commande::Options),
+            (Key::R, Commande::Recherche),
+            (Key::P, Commande::Parametres),
             (Key::Q, Commande::FiltrePrecedent),
             (Key::PageUp, Commande::FiltrePrecedent),
             (Key::E, Commande::FiltreSuivant),
@@ -124,6 +135,10 @@ impl App {
     }
 
     pub(super) fn commande_tv(&mut self, c: Commande, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if self.style_xmb() {
+            self.commande_xmb(c, ctx, actions);
+            return;
+        }
         let ids = self.ids_tv();
         let i = self
             .tv
@@ -142,7 +157,7 @@ impl App {
                     actions.push(Action::Lancer(id));
                 }
             }
-            Commande::Favori => {
+            Commande::Options => {
                 if let Some(&id) = ids.get(i) {
                     actions.push(Action::BasculerFavori(id));
                     self.tv.defiler = true;
@@ -158,8 +173,8 @@ impl App {
                 self.tv.selection = self.ids_tv().first().copied();
                 self.tv.defiler = true;
             }
-            Commande::Retour => self.basculer_mode_tv(ctx),
-            Commande::BasculerPleinEcran => {}
+            Commande::Retour | Commande::Parametres => self.basculer_mode_tv(ctx),
+            Commande::Recherche | Commande::BasculerPleinEcran => {}
         }
     }
 
@@ -209,7 +224,7 @@ impl App {
                 );
                 ui.add_space(16.0);
                 let (icone, texte) = match &self.manette_connectee {
-                    Some(nom) => ("🎮", nom.clone()),
+                    Some((nom, _)) => ("🎮", nom.clone()),
                     None => ("⌨", "Clavier".to_string()),
                 };
                 ui.label(RichText::new(format!("{icone}  {texte}")).color(p.fg_muted));
@@ -400,7 +415,12 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Affichées de droite à gauche.
                 let aides: [(&str, &str); 3] = if self.manette_connectee.is_some() {
-                    [("B", "Quitter le plein écran"), ("Y", "Favori"), ("A", "Lancer")]
+                    match self.famille_glyphes() {
+                        Some(crate::manette::FamilleManette::PlayStation) => {
+                            [("Rond", "Quitter le plein écran"), ("Triangle", "Favori"), ("Croix", "Lancer")]
+                        }
+                        _ => [("B", "Quitter le plein écran"), ("Y", "Favori"), ("A", "Lancer")],
+                    }
                 } else {
                     [("Échap", "Quitter le plein écran"), ("F", "Favori"), ("Entrée", "Lancer")]
                 };

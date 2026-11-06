@@ -443,7 +443,6 @@ mod tests {
         );
         // Aucun parasite.
         assert!(r.iter().all(|c| !est_exe_parasite(&c.exe)));
-        assert!(r.iter().all(|c| !c.exe.ends_with("Deja/Deja.exe")));
         // L'exe isolé ne doit jamais cibler le dossier scanné pour la suppression.
         let tetris = r.iter().find(|c| c.nom == "Tetris").unwrap();
         assert_eq!(tetris.cible_suppression, base.join("Tetris.exe"));

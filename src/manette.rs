@@ -23,19 +23,40 @@ pub enum Commande {
     /// B / Rond
     Retour,
     /// Y / Triangle
-    Favori,
+    Options,
+    /// X / Carré
+    Recherche,
     /// LB / L1
     FiltrePrecedent,
     /// RB / R1
     FiltreSuivant,
     /// Start / Menu / Options
+    Parametres,
+    /// F11 : ne vient que du clavier et des boutons de l'interface.
     BasculerPleinEcran,
+}
+
+/// Famille de manette, pour afficher les bons boutons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FamilleManette {
+    Xbox,
+    PlayStation,
+}
+
+const VENDEUR_SONY: u16 = 0x054c;
+
+/// Sans information sur le fabricant, on suppose une manette de type Xbox.
+fn famille(vendeur: Option<u16>) -> FamilleManette {
+    match vendeur {
+        Some(VENDEUR_SONY) => FamilleManette::PlayStation,
+        _ => FamilleManette::Xbox,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MsgManette {
     Commande(Commande),
-    Connectee(String),
+    Connectee(String, FamilleManette),
     Deconnectee,
 }
 
@@ -57,7 +78,7 @@ fn boucle(tx: &Sender<MsgManette>, ctx: &egui::Context) {
         ok
     };
     for (_, g) in gilrs.gamepads() {
-        envoyer(MsgManette::Connectee(g.name().to_string()));
+        envoyer(MsgManette::Connectee(g.name().to_string(), famille(g.vendor_id())));
     }
 
     let mut stick = (0.0f32, 0.0f32);
@@ -105,9 +126,10 @@ fn boucle(tx: &Sender<MsgManette>, ctx: &egui::Context) {
                     stick.1 = v;
                     None
                 }
-                EventType::Connected => Some(MsgManette::Connectee(
-                    gilrs.gamepad(ev.id).name().to_string(),
-                )),
+                EventType::Connected => {
+                    let g = gilrs.gamepad(ev.id);
+                    Some(MsgManette::Connectee(g.name().to_string(), famille(g.vendor_id())))
+                }
                 EventType::Disconnected => {
                     croix = None;
                     stick = (0.0, 0.0);
@@ -136,10 +158,11 @@ fn bouton(b: Button) -> Option<Commande> {
     Some(match b {
         Button::South => Commande::Valider,
         Button::East => Commande::Retour,
-        Button::North => Commande::Favori,
+        Button::North => Commande::Options,
+        Button::West => Commande::Recherche,
         Button::LeftTrigger => Commande::FiltrePrecedent,
         Button::RightTrigger => Commande::FiltreSuivant,
-        Button::Start => Commande::BasculerPleinEcran,
+        Button::Start => Commande::Parametres,
         _ => return None,
     })
 }
@@ -214,6 +237,25 @@ impl Repetition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapping_des_boutons() {
+        assert_eq!(bouton(Button::South), Some(Commande::Valider));
+        assert_eq!(bouton(Button::East), Some(Commande::Retour));
+        assert_eq!(bouton(Button::North), Some(Commande::Options));
+        assert_eq!(bouton(Button::West), Some(Commande::Recherche));
+        assert_eq!(bouton(Button::LeftTrigger), Some(Commande::FiltrePrecedent));
+        assert_eq!(bouton(Button::RightTrigger), Some(Commande::FiltreSuivant));
+        assert_eq!(bouton(Button::Start), Some(Commande::Parametres));
+        assert_eq!(bouton(Button::Select), None);
+    }
+
+    #[test]
+    fn famille_selon_le_fabricant() {
+        assert_eq!(famille(Some(0x054c)), FamilleManette::PlayStation);
+        assert_eq!(famille(Some(0x045e)), FamilleManette::Xbox);
+        assert_eq!(famille(None), FamilleManette::Xbox);
+    }
 
     #[test]
     fn stick_avec_hysteresis() {

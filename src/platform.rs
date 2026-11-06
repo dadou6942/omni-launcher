@@ -11,6 +11,8 @@ pub struct ImageRgba {
     pub pixels: Vec<u8>,
 }
 
+pub use imp::jouer_wav;
+
 /// Ouvre une page web. Seules les adresses HTTPS sont acceptées.
 pub fn ouvrir_url(url: &str) -> Result<(), String> {
     if !url.starts_with("https://") {
@@ -81,6 +83,23 @@ mod imp {
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// Joue un WAV en mémoire sans bloquer. Le son est un simple agrément :
+    /// un échec est ignoré.
+    pub fn jouer_wav(wav: &'static [u8]) {
+        use windows::Win32::Media::Audio::{
+            PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT,
+        };
+        // SAFETY: avec SND_MEMORY, le pointeur désigne les octets du WAV, et ils
+        // sont `'static` : ils restent valides pendant toute la lecture asynchrone.
+        let _ = unsafe {
+            PlaySoundW(
+                PCWSTR(wav.as_ptr().cast()),
+                None,
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+            )
+        };
     }
 
     pub fn ouvrir_navigateur(url: &str) -> Result<(), String> {
@@ -311,6 +330,8 @@ mod imp {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+
+    pub fn jouer_wav(_wav: &'static [u8]) {}
 
     pub fn ouvrir_navigateur(url: &str) -> Result<(), String> {
         std::process::Command::new("xdg-open")

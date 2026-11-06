@@ -12,6 +12,7 @@ mod platform;
 mod reseau;
 mod sauvegarde;
 mod scan;
+mod sons;
 mod stats;
 mod steamgriddb;
 mod theme;

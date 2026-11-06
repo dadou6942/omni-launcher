@@ -12,6 +12,7 @@ mod parametres;
 mod statistiques;
 mod tv;
 mod visuels;
+mod xmb;
 
 use crate::bibliotheque::{Bibliotheque, ErreurLancement, Filtre, Section};
 use crate::config::{
@@ -79,6 +80,8 @@ enum Action {
     RecupererImages,
     VerifierMaj,
     OuvrirDonnees,
+    OuvrirSauvegardes,
+    OuvrirPageCle,
     ViderCache,
     Quitter,
     Lancer(u64),
@@ -179,10 +182,11 @@ pub struct App {
     sauvegarde_differee: bool,
     sauvegardes: Vec<InfoSauvegarde>,
     manette: Receiver<MsgManette>,
-    manette_connectee: Option<String>,
+    manette_connectee: Option<(String, crate::manette::FamilleManette)>,
     commandes: Vec<Commande>,
     mode_tv: bool,
     tv: tv::EtatTv,
+    xmb: xmb::EtatXmb,
     cle_sgdb: String,
     edition_visuels: Option<visuels::EditionVisuels>,
     lot_visuels: Option<visuels::LotVisuels>,
@@ -228,6 +232,7 @@ impl App {
             commandes: Vec::new(),
             mode_tv: false,
             tv: tv::EtatTv::default(),
+            xmb: xmb::EtatXmb::default(),
             cle_sgdb,
             edition_visuels: None,
             lot_visuels: None,
@@ -235,6 +240,9 @@ impl App {
         };
         if app.bib.config.verifier_maj {
             app.chercher_maj(ctx, false);
+        }
+        if app.bib.config.demarrer_plein_ecran {
+            app.basculer_mode_tv(ctx);
         }
         app
     }
@@ -474,6 +482,17 @@ impl App {
                     self.notifier_erreur(e);
                 }
             }
+            Action::OuvrirSauvegardes => {
+                let dossier = self.bib.dossiers.sauvegardes.clone();
+                if let Err(e) = platform::ouvrir_dossier(&dossier) {
+                    self.notifier_erreur(e);
+                }
+            }
+            Action::OuvrirPageCle => {
+                if let Err(e) = platform::ouvrir_url(steamgriddb::PAGE_CLE_API) {
+                    self.notifier_erreur(e);
+                }
+            }
             Action::ViderCache => self.vider_cache(),
             Action::Quitter => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::Lancer(id) => self.lancer(id, ctx),
@@ -600,6 +619,10 @@ impl App {
         }
 
         for (id, nom, mesure) in messages {
+            // Retour sur le jeu qui vient de se fermer, dans tous les modes.
+            self.selection = Some(id);
+            self.xmb.retrouver_jeu(id);
+            self.tv.retrouver_jeu(id);
             match mesure {
                 Some((debut, fin)) => {
                     let duree = fin.saturating_sub(debut);
@@ -620,7 +643,8 @@ impl App {
 
         if self.parties.is_empty() {
             self.reduire_a = None;
-            if self.bib.config.fermer_apres_lancement {
+            // En plein écran, le launcher revient toujours sur le jeu.
+            if self.bib.config.fermer_apres_lancement && !self.mode_tv {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -657,7 +681,11 @@ impl App {
         else {
             return;
         };
-        match icons::importer_icone(&fichier, id, &self.bib.dossiers) {
+        self.adopter_icone(id, &fichier);
+    }
+
+    fn adopter_icone(&mut self, id: u64, fichier: &std::path::Path) {
+        match icons::importer_icone(fichier, id, &self.bib.dossiers) {
             Ok(nouveau) => {
                 self.bib.changer_icone(id, Some(nouveau));
                 self.icones.invalider(id);
@@ -761,7 +789,11 @@ impl App {
         else {
             return;
         };
-        match sauvegarde::exporter(&self.bib.config, &chemin) {
+        self.exporter_vers(&chemin);
+    }
+
+    fn exporter_vers(&mut self, chemin: &std::path::Path) {
+        match sauvegarde::exporter(&self.bib.config, chemin) {
             Ok(()) => self.notifier(format!(
                 "Bibliothèque exportée ({} jeux).",
                 self.bib.config.jeux.len()
@@ -778,7 +810,11 @@ impl App {
         else {
             return;
         };
-        match sauvegarde::lire(&chemin) {
+        self.lire_import(&chemin);
+    }
+
+    fn lire_import(&mut self, chemin: &std::path::Path) {
+        match sauvegarde::lire(chemin) {
             Ok(config) => {
                 self.dialogue = Some(Dialogue::Importer {
                     config: Box::new(config),
@@ -805,7 +841,12 @@ impl App {
         });
         while let Ok(m) = self.manette.try_recv() {
             match m {
-                MsgManette::Connectee(nom) => self.manette_connectee = Some(nom),
+                MsgManette::Connectee(nom, famille) => {
+                    self.manette_connectee = Some((nom, famille));
+                    if self.bib.config.bascule_manette && !self.mode_tv {
+                        self.basculer_mode_tv(ctx);
+                    }
+                }
                 MsgManette::Deconnectee => self.manette_connectee = None,
                 MsgManette::Commande(c) if actif => self.commandes.push(c),
                 MsgManette::Commande(_) => {}
@@ -816,6 +857,8 @@ impl App {
     fn basculer_mode_tv(&mut self, ctx: &egui::Context) {
         self.mode_tv = !self.mode_tv;
         self.renommage = None;
+        self.palette = None;
+        self.aide_ouverte = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.mode_tv));
         if self.mode_tv {
             self.tv.entrer();
@@ -1101,10 +1144,13 @@ impl App {
 
     fn fenetres(&mut self, ctx: &egui::Context) {
         self.fenetre_scan(ctx);
-        self.fenetre_revue(ctx);
-        self.fenetre_dialogue(ctx);
-        self.fenetre_visuels(ctx);
         self.fenetre_lot(ctx);
+        // Le menu XMB présente ces fenêtres sous forme de pages.
+        if !(self.mode_tv && self.style_xmb()) {
+            self.fenetre_revue(ctx);
+            self.fenetre_dialogue(ctx);
+            self.fenetre_visuels(ctx);
+        }
     }
 
     fn fenetre_scan(&mut self, ctx: &egui::Context) {
@@ -1158,12 +1204,7 @@ impl App {
                     revue.candidats.iter_mut().for_each(|c| c.coche = false);
                 }
                 if ui.button("Uniquement les principaux").clicked() {
-                    let mut vus = HashSet::new();
-                    for c in revue.candidats.iter_mut() {
-                        let principal =
-                            vus.insert(c.groupe.clone()) || c.groupe == "(fichiers isolés)";
-                        c.coche = principal && !c.doublon;
-                    }
+                    xmb::cocher_principaux(&mut revue.candidats);
                 }
             });
             ui.separator();
@@ -1696,9 +1737,21 @@ impl App {
         else {
             return;
         };
+        self.adopter_exe(id, fichier);
+    }
+
+    fn adopter_exe(&mut self, id: u64, fichier: PathBuf) {
         self.bib.relocaliser(id, fichier);
         self.icones.invalider(id);
         self.sauver();
+    }
+
+    /// Annule le scan ou la récupération d'images en cours.
+    fn annuler_taches(&self) {
+        if let Some(scan) = &self.scan {
+            scan.annule.store(true, Ordering::Relaxed);
+        }
+        self.annuler_lot();
     }
 
     fn afficher_notification(&mut self, ctx: &egui::Context) {
@@ -1933,7 +1986,7 @@ impl eframe::App for App {
                 self.reduire_a = None;
                 if self.parties.is_empty() {
                     // Rien à suivre (lancement raté entre-temps) : comportement d'origine.
-                    if self.bib.config.fermer_apres_lancement {
+                    if self.bib.config.fermer_apres_lancement && !self.mode_tv {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 } else {
@@ -1962,12 +2015,14 @@ impl eframe::App for App {
         self.suivre_maj();
         let mut actions = Vec::new();
         self.raccourcis_clavier(&ctx, &mut actions);
-        if self.mode_tv && self.dialogue.is_none() {
+        if self.mode_tv && (self.dialogue.is_none() || self.style_xmb()) {
             self.clavier_tv(&ctx);
         }
         self.traiter_commandes(&ctx, &mut actions);
 
-        if self.mode_tv {
+        if self.mode_tv && self.style_xmb() {
+            self.vue_xmb(ui);
+        } else if self.mode_tv {
             self.vue_tv(ui, &mut actions);
         } else {
             self.barre_laterale(ui, &mut actions);

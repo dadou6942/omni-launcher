@@ -83,6 +83,24 @@ fn traiter_lot(
     ctx.request_repaint();
 }
 
+impl EditionVisuels {
+    pub(super) fn occupe(&self) -> bool {
+        self.tache.is_some()
+    }
+
+    pub(super) fn message(&self) -> Option<&str> {
+        self.erreur.as_deref()
+    }
+
+    pub(super) fn resultats(&self) -> &[ResultatJeu] {
+        &self.resultats
+    }
+
+    pub(super) fn definir_recherche(&mut self, texte: String) {
+        self.recherche = texte;
+    }
+}
+
 impl App {
     fn appliquer_images(&mut self, id: u64, images: Telecharges) -> usize {
         let mut n = 0;
@@ -108,7 +126,7 @@ impl App {
         }
     }
 
-    fn lancer_recherche(&mut self, ctx: &egui::Context) {
+    pub(super) fn lancer_recherche(&mut self, ctx: &egui::Context) {
         let cle = self.cle_sgdb.clone();
         let Some(e) = &mut self.edition_visuels else { return };
         let terme = e.recherche.trim().to_string();
@@ -125,7 +143,7 @@ impl App {
         e.tache = Some(rx);
     }
 
-    fn lancer_telechargement(&mut self, id_sgdb: u64, ctx: &egui::Context) {
+    pub(super) fn lancer_telechargement(&mut self, id_sgdb: u64, ctx: &egui::Context) {
         let cle = self.cle_sgdb.clone();
         let dossier = self.bib.dossiers.jaquettes.clone();
         let Some(e) = &mut self.edition_visuels else { return };
@@ -192,13 +210,27 @@ impl App {
         else {
             return;
         };
-        match steamgriddb::importer_image(&fichier, id, genre, &self.bib.dossiers.jaquettes) {
+        self.importer_visuel(id, genre, &fichier);
+    }
+
+    pub(super) fn importer_visuel(&mut self, id: u64, genre: Genre, fichier: &std::path::Path) {
+        match steamgriddb::importer_image(fichier, id, genre, &self.bib.dossiers.jaquettes) {
             Ok(nom) => {
                 self.bib.changer_visuel(id, genre, Some(nom));
                 self.icones.invalider_genre(id, genre);
                 self.sauver();
             }
             Err(e) => self.notifier_erreur(e),
+        }
+    }
+
+    pub(super) fn lot_en_cours(&self) -> bool {
+        self.lot_visuels.is_some()
+    }
+
+    pub(super) fn annuler_lot(&self) {
+        if let Some(lot) = &self.lot_visuels {
+            lot.annule.store(true, Ordering::Relaxed);
         }
     }
 

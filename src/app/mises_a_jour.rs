@@ -52,7 +52,7 @@ impl App {
         };
     }
 
-    fn ouvrir_page_maj(&mut self, url: &str) {
+    pub(super) fn ouvrir_page_maj(&mut self, url: &str) {
         if let Err(e) = platform::ouvrir_url(url) {
             self.notifier_erreur(e);
         }
