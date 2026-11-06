@@ -185,6 +185,8 @@ La colonne « Aujourd'hui » indique où se trouve la fonctionnalité dans la v2
 
 ## 3. Limites connues
 
+- **Captures d'écran du README** : à ajouter dans `docs/captures/` (vue jaquettes avec le panneau de détail, vue liste, palette, carrousel, clavier virtuel).
+
 - **Manette physique** : une manette branchée a été détectée et a affiché les boutons PlayStation automatiquement, mais les parcours complets ont été testés au clavier.
 - **Son** : le code est testé, mais personne n'a écouté le résultat.
 - **Statistiques en plein écran** : l'activité des 14 derniers jours est un total, sans le graphique du mode bureau.

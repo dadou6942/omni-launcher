@@ -1,6 +1,6 @@
 # 🎮 Omni Launcher
 
-Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment_ en toute légalité) dans une grille d'icônes
+Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment_ en toute légalité) dans une bibliothèque claire à la souris, et un carrousel de jaquettes à la manette.
 
 Écrit en **Rust** avec [egui](https://github.com/emilk/egui) : un seul exécutable autonome, sans Python ni dépendance à installer. La version 3 apporte une nouvelle interface, avec un mode bureau et un menu plein écran à la manette.
 
@@ -12,7 +12,6 @@ Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment
 
 ## Table des matières
 
-- [Captures d'écran](#captures-décran)
 - [Fonctionnalités](#fonctionnalités)
 - [Installation](#installation)
 - [Compiler depuis les sources](#compiler-depuis-les-sources)
@@ -27,22 +26,10 @@ Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment
 
 ---
 
-## Captures d'écran
-
-À ajouter dans `docs/captures/` :
-
-- `bureau.png` : bibliothèque en vue jaquettes, avec le panneau de détail ouvert
-- `liste.png` : vue liste
-- `palette.png` : palette de commandes
-- `xmb.png` : menu plein écran, catégorie Jeux
-- `clavier.png` : clavier virtuel
-
----
-
 ## Fonctionnalités
 
 - **Mode bureau** : barre latérale repliable, recherche toujours visible, palette de commandes `Ctrl+K`, panneau de détail du jeu.
-- **Menu plein écran façon XMB** : catégories, liste verticale, fond en vagues, clavier virtuel, entièrement utilisable à la manette.
+- **Menu plein écran façon XMB** : carrousel horizontal de jaquettes, catégories, fond en vagues, clavier virtuel, entièrement utilisable à la manette.
 - **Scan de dossier** : parcourt un dossier de jeux (un sous-dossier par jeu) et propose les exécutables trouvés. Le plus probable est pré-coché ; désinstalleurs, redistribuables et outils de rapport de plantage sont écartés automatiquement.
 - **Bibliothèques Steam reconnues** : le scan descend directement dans `steamapps\common`.
 - **Re-scan** : ajoute en un clic les jeux installés depuis le dernier scan.
@@ -52,7 +39,7 @@ Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment
 - **Jaquettes et bannières** : téléchargées depuis [SteamGridDB](https://www.steamgriddb.com) avec votre clé d'API gratuite, jeu par jeu ou pour toute la bibliothèque, ou choisies parmi vos images.
 - **Section « Joués récemment »** en tête de la bibliothèque, désactivable.
 - **Favoris**, affichés en tête de la bibliothèque.
-- **Tags** (Coop, Rétro, À finir…) : plusieurs par jeu, filtres en un clic sous l'en-tête, renommage et suppression depuis les paramètres.
+- **Tags** (Coop, Rétro, À finir…) : plusieurs par jeu, retrouvés dans les collections de la barre latérale, renommage et suppression depuis les paramètres.
 - **Statut et notes par jeu** : à jouer, en cours, terminé, abandonné, avec filtres en un clic et notes libres.
 - **Temps de jeu** : pendant une partie, le launcher se réduit et surveille les processus du jeu (y compris quand l'exe n'est qu'un petit lanceur), puis enregistre la durée et revient ou se ferme.
 - **Statistiques** : temps total, 7 derniers jours, activité des 14 derniers jours, jeux les plus joués, temps par tag, jeux jamais lancés.
@@ -73,7 +60,9 @@ Un lanceur de jeux léger pour Windows : vos `.exe` (téléchargés _évidemment
 
 ## Installation
 
-Téléchargez `omni_launcher.exe` depuis la page [Releases](https://github.com/dadou6942/omni-launcher/releases) et lancez-le. Aucune installation n'est nécessaire : l'exécutable est autonome et peut être placé n'importe où (clé USB comprise).
+Téléchargez `omni_launcher.exe` depuis la [dernière release](https://github.com/dadou6942/omni-launcher/releases/latest) et lancez-le. Aucune installation n'est nécessaire : l'exécutable est autonome et peut être placé n'importe où (clé USB comprise).
+
+Pour mettre à jour, remplacez l'ancien exécutable sans toucher au dossier `donnees` à côté de lui : votre bibliothèque est reprise automatiquement.
 
 ---
 
@@ -249,6 +238,10 @@ omni-launcher/
 ## Nouveautés de la v3
 
 Nouvelle interface, sans perte de fonctionnalité : la liste complète et son état sont dans [FEATURES.md](FEATURES.md). La configuration existante est reprise automatiquement.
+
+- **Mode bureau** : barre latérale, palette de commandes, panneau de détail, doublons signalés au scan.
+- **Plein écran** : carrousel de jaquettes, menu de type XMB, clavier virtuel et navigateur de fichiers à la manette.
+- **Fin de partie** : en plein écran, le launcher revient sur le jeu qui vient de se fermer.
 
 ---
 
