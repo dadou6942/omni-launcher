@@ -1,9 +1,39 @@
-//! Thèmes de couleurs. La palette active est globale : l'interface la relit à
-//! chaque image via [`p`], ce qui permet de changer de thème à la volée.
+//! Design tokens : couleurs, espacements, rayons, tailles de police et durées
+//! d'animation. Tout le reste de l'interface s'appuie sur ce fichier.
+//!
+//! La palette active est globale : l'interface la relit à chaque image via
+//! [`p`], ce qui permet de changer de thème à la volée.
 
 use crate::config::Theme;
 use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke};
 use std::sync::{Arc, RwLock};
+
+/// Espacements.
+pub const ESPACE_XS: f32 = 4.0;
+pub const ESPACE_S: f32 = 8.0;
+pub const ESPACE_M: f32 = 12.0;
+pub const ESPACE_L: f32 = 16.0;
+pub const ESPACE_XL: f32 = 24.0;
+pub const ESPACE_XXL: f32 = 32.0;
+
+/// Rayons d'arrondi.
+pub const RAYON_S: u8 = 6;
+pub const RAYON_M: u8 = 10;
+pub const RAYON_L: u8 = 14;
+pub const RAYON_PILULE: u8 = 18;
+
+/// Tailles de police.
+pub const POLICE_PETITE: f32 = 12.5;
+pub const POLICE_LEGENDE: f32 = 13.0;
+pub const POLICE_CORPS: f32 = 15.0;
+pub const POLICE_SECTION: f32 = 18.0;
+pub const POLICE_TITRE: f32 = 28.0;
+pub const POLICE_XMB: f32 = 22.0;
+pub const POLICE_XMB_FOCUS: f32 = 30.0;
+
+/// Durées d'animation, en secondes.
+pub const DUREE_RAPIDE: f32 = 0.15;
+pub const DUREE_NORMALE: f32 = 0.25;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
@@ -186,17 +216,18 @@ pub fn gras() -> FontFamily {
 pub fn initialiser(ctx: &egui::Context) {
     charger_polices(ctx);
     ctx.global_style_mut(|s| {
-        s.spacing.button_padding = egui::vec2(14.0, 7.0);
-        s.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        s.spacing.button_padding = egui::vec2(ESPACE_L, ESPACE_S);
+        s.spacing.item_spacing = egui::vec2(ESPACE_M, ESPACE_S);
+        s.animation_time = DUREE_RAPIDE;
         s.spacing.scroll.bar_width = 8.0;
         s.text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(POLICE_CORPS));
         s.text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(POLICE_CORPS));
         s.text_styles
-            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.5));
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(POLICE_PETITE));
         s.text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::new(28.0, gras()));
+            .insert(egui::TextStyle::Heading, egui::FontId::new(POLICE_TITRE, gras()));
     });
 }
 
@@ -217,9 +248,10 @@ pub fn appliquer(ctx: &egui::Context, theme: Theme, accent_perso: Option<[u8; 3]
     v.window_fill = pal.bg_menu;
     v.extreme_bg_color = pal.bg_btn;
     v.faint_bg_color = pal.bg_menu;
-    v.window_stroke = Stroke::new(1.0, pal.bordure);
-    v.window_corner_radius = CornerRadius::same(10);
-    v.menu_corner_radius = CornerRadius::same(8);
+    // Peu de bordures : les surfaces se distinguent par leur fond.
+    v.window_stroke = Stroke::NONE;
+    v.window_corner_radius = CornerRadius::same(RAYON_L);
+    v.menu_corner_radius = CornerRadius::same(RAYON_M);
     v.override_text_color = Some(pal.fg);
     v.selection.bg_fill = pal.accent.linear_multiply(0.35);
     v.selection.stroke = Stroke::new(1.0, pal.accent);
@@ -231,7 +263,7 @@ pub fn appliquer(ctx: &egui::Context, theme: Theme, accent_perso: Option<[u8; 3]
     w.inactive.bg_stroke = Stroke::NONE;
     w.hovered.weak_bg_fill = pal.bg_btn_hover;
     w.hovered.bg_fill = pal.bg_btn_hover;
-    w.hovered.bg_stroke = Stroke::new(1.0, pal.bordure);
+    w.hovered.bg_stroke = Stroke::NONE;
     w.active.weak_bg_fill = pal.bg_btn_hover;
     w.active.bg_fill = pal.bg_btn_hover;
     w.active.bg_stroke = Stroke::new(1.0, pal.accent);
@@ -242,9 +274,9 @@ pub fn appliquer(ctx: &egui::Context, theme: Theme, accent_perso: Option<[u8; 3]
         &mut w.open,
         &mut w.noninteractive,
     ] {
-        etat.corner_radius = CornerRadius::same(6);
+        etat.corner_radius = CornerRadius::same(RAYON_S);
     }
-    w.noninteractive.bg_stroke = Stroke::new(1.0, pal.bordure);
+    w.noninteractive.bg_stroke = Stroke::new(1.0, pal.bg_btn);
 
     ctx.set_visuals(v);
 }

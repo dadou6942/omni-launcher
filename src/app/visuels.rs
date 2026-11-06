@@ -84,33 +84,12 @@ fn traiter_lot(
 }
 
 impl App {
-    /// Remplace (ou retire, avec `None`) une image d'un jeu et supprime
-    /// l'ancien fichier. Le jeu a pu disparaître pendant le téléchargement.
-    fn changer_visuel(&mut self, id: u64, genre: Genre, nom: Option<String>) {
-        let Some(jeu) = self.config.jeu_mut(id) else {
-            if let Some(n) = nom {
-                let _ = std::fs::remove_file(self.dossiers.jaquettes.join(n));
-            }
-            return;
-        };
-        let champ = match genre {
-            Genre::Banniere => &mut jeu.banniere,
-            Genre::Jaquette | Genre::Icone => &mut jeu.jaquette,
-        };
-        let ancien = std::mem::replace(champ, nom.clone());
-        if let Some(a) = ancien
-            && Some(&a) != nom.as_ref()
-        {
-            let _ = std::fs::remove_file(self.dossiers.jaquettes.join(a));
-        }
-        self.icones.invalider_genre(id, genre);
-    }
-
     fn appliquer_images(&mut self, id: u64, images: Telecharges) -> usize {
         let mut n = 0;
         for (genre, nom) in [(Genre::Jaquette, images.jaquette), (Genre::Banniere, images.banniere)] {
             if nom.is_some() {
-                self.changer_visuel(id, genre, nom);
+                self.bib.changer_visuel(id, genre, nom);
+                self.icones.invalider_genre(id, genre);
                 n += 1;
             }
         }
@@ -118,7 +97,7 @@ impl App {
     }
 
     pub(super) fn ouvrir_visuels(&mut self, id: u64) {
-        if let Some(nom) = self.jeu(id).map(|j| j.nom.clone()) {
+        if let Some(nom) = self.bib.jeu(id).map(|j| j.nom.clone()) {
             self.edition_visuels = Some(EditionVisuels {
                 id,
                 recherche: nom,
@@ -148,7 +127,7 @@ impl App {
 
     fn lancer_telechargement(&mut self, id_sgdb: u64, ctx: &egui::Context) {
         let cle = self.cle_sgdb.clone();
-        let dossier = self.dossiers.jaquettes.clone();
+        let dossier = self.bib.dossiers.jaquettes.clone();
         let Some(e) = &mut self.edition_visuels else { return };
         if e.tache.is_some() {
             return;
@@ -213,9 +192,10 @@ impl App {
         else {
             return;
         };
-        match steamgriddb::importer_image(&fichier, id, genre, &self.dossiers.jaquettes) {
+        match steamgriddb::importer_image(&fichier, id, genre, &self.bib.dossiers.jaquettes) {
             Ok(nom) => {
-                self.changer_visuel(id, genre, Some(nom));
+                self.bib.changer_visuel(id, genre, Some(nom));
+                self.icones.invalider_genre(id, genre);
                 self.sauver();
             }
             Err(e) => self.notifier_erreur(e),
@@ -226,7 +206,7 @@ impl App {
         let Some(id) = self.edition_visuels.as_ref().map(|e| e.id) else {
             return;
         };
-        let Some(jeu) = self.jeu(id).cloned() else {
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
             self.edition_visuels = None;
             return;
         };
@@ -280,7 +260,8 @@ impl App {
         match choix {
             Some(Choix::Fichier(genre)) => self.choisir_fichier_visuel(id, genre),
             Some(Choix::Retirer(genre)) => {
-                self.changer_visuel(id, genre, None);
+                self.bib.changer_visuel(id, genre, None);
+                self.icones.invalider_genre(id, genre);
                 self.sauver();
             }
             Some(Choix::Rechercher) => self.lancer_recherche(ctx),
@@ -291,7 +272,7 @@ impl App {
     }
 
     pub(super) fn enregistrer_cle(&mut self) {
-        match steamgriddb::ecrire_cle(&self.dossiers, &self.cle_sgdb) {
+        match steamgriddb::ecrire_cle(&self.bib.dossiers, &self.cle_sgdb) {
             Ok(()) => self.cle_sgdb = self.cle_sgdb.trim().to_string(),
             Err(e) => self.notifier_erreur(format!("Impossible d'enregistrer la clé : {e}")),
         }
@@ -299,7 +280,7 @@ impl App {
 
     /// Jeux à compléter, avec les images qui leur manquent.
     fn jeux_incomplets(&self) -> Vec<(u64, String, Vec<Genre>)> {
-        self.config
+        self.bib.config
             .jeux
             .iter()
             .filter_map(|j| {
@@ -324,7 +305,7 @@ impl App {
         let (tx, reception) = channel();
         let annule = Arc::new(AtomicBool::new(false));
         let total = jeux.len();
-        let (cle, dossier) = (self.cle_sgdb.clone(), self.dossiers.jaquettes.clone());
+        let (cle, dossier) = (self.cle_sgdb.clone(), self.bib.dossiers.jaquettes.clone());
         let (annule_thread, ctx) = (Arc::clone(&annule), ctx.clone());
         std::thread::spawn(move || traiter_lot(cle, jeux, dossier, annule_thread, tx, ctx));
         self.lot_visuels = Some(LotVisuels {

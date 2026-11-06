@@ -9,6 +9,7 @@ mod statistiques;
 mod tv;
 mod visuels;
 
+use crate::bibliotheque::{Bibliotheque, ErreurLancement, Filtre, Section};
 use crate::config::{
     Affichage, Config, Dossiers, Jeu, Statut, TAILLE_TUILE_MAX, TAILLE_TUILE_MIN, Tri, cle_chemin,
     maintenant,
@@ -26,7 +27,7 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Key, RichText, Sense, Stroke, Vec2,
 };
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
@@ -125,8 +126,7 @@ struct PartieEnCours {
 }
 
 pub struct App {
-    dossiers: Dossiers,
-    config: Config,
+    bib: Bibliotheque,
     icones: ChargeurIcones,
     vue: Vue,
     recherche: String,
@@ -137,7 +137,6 @@ pub struct App {
     dialogue: Option<Dialogue>,
     scan: Option<ScanEnCours>,
     revue: Option<Revue>,
-    manquants: HashSet<u64>,
     notification: Option<Notification>,
     suppressions: Vec<Receiver<Result<String, String>>>,
     parties: Vec<PartieEnCours>,
@@ -169,8 +168,7 @@ impl App {
         let icones = ChargeurIcones::nouveau(ctx, &dossiers);
         let cle_sgdb = steamgriddb::lire_cle(&dossiers);
         let mut app = Self {
-            dossiers,
-            config,
+            bib: Bibliotheque::nouvelle(dossiers, config),
             icones,
             vue: Vue::Bibliotheque,
             recherche: String::new(),
@@ -181,7 +179,6 @@ impl App {
             dialogue: None,
             scan: None,
             revue: None,
-            manquants: HashSet::new(),
             notification: None,
             suppressions: Vec::new(),
             parties: Vec::new(),
@@ -198,8 +195,7 @@ impl App {
             lot_visuels: None,
             maj: mises_a_jour::EtatMaj::Inconnu,
         };
-        app.verifier_manquants();
-        if app.config.verifier_maj {
+        if app.bib.config.verifier_maj {
             app.chercher_maj(ctx, false);
         }
         app
@@ -211,7 +207,7 @@ impl App {
 
     fn sauver(&mut self) {
         self.sauvegarde_differee = false;
-        if let Err(e) = self.config.sauvegarder(&self.dossiers.config) {
+        if let Err(e) = self.bib.sauver() {
             self.notifier_erreur(format!("Impossible d'enregistrer la configuration : {e}"));
         }
     }
@@ -232,78 +228,21 @@ impl App {
         });
     }
 
-    fn verifier_manquants(&mut self) {
-        self.manquants = self
-            .config
-            .jeux
-            .iter()
-            .filter(|j| !j.exe.is_file())
-            .map(|j| j.id)
-            .collect();
-    }
-
-    fn jeu(&self, id: u64) -> Option<&Jeu> {
-        self.config.jeux.iter().find(|j| j.id == id)
-    }
-
     fn appliquer_theme(&self, ctx: &egui::Context) {
-        theme::appliquer(ctx, self.config.theme, self.config.accent_perso);
-    }
-
-    /// Jeux filtrés (recherche sur le nom et les tags, filtres de tag et de
-    /// statut) et triés, séparés en (favoris, autres).
-    fn trier_filtrer(
-        &self,
-        recherche: &str,
-        tag: Option<&str>,
-        statut: Option<Statut>,
-    ) -> (Vec<u64>, Vec<u64>) {
-        let termes: Vec<String> = recherche
-            .split_whitespace()
-            .map(|t| t.to_lowercase())
-            .collect();
-
-        let mut jeux: Vec<&Jeu> = self
-            .config
-            .jeux
-            .iter()
-            .filter(|j| tag.is_none_or(|t| j.a_tag(t)))
-            .filter(|j| statut.is_none_or(|s| j.statut == s))
-            .filter(|j| {
-                let nom = j.nom.to_lowercase();
-                termes.iter().all(|t| {
-                    nom.contains(t.as_str())
-                        || j.tags.iter().any(|g| g.to_lowercase().contains(t.as_str()))
-                })
-            })
-            .collect();
-
-        match self.config.tri {
-            Tri::Nom => jeux.sort_by_cached_key(|j| j.nom.to_lowercase()),
-            Tri::DernierLancement => jeux.sort_by(|a, b| {
-                b.dernier_lancement
-                    .cmp(&a.dernier_lancement)
-                    .then_with(|| a.nom.to_lowercase().cmp(&b.nom.to_lowercase()))
-            }),
-            Tri::DateAjout => {
-                jeux.sort_by(|a, b| b.ajoute_le.cmp(&a.ajoute_le).then(b.id.cmp(&a.id)))
-            }
-            Tri::TempsDeJeu => jeux.sort_by(|a, b| {
-                b.temps_jeu
-                    .cmp(&a.temps_jeu)
-                    .then_with(|| a.nom.to_lowercase().cmp(&b.nom.to_lowercase()))
-            }),
-        }
-
-        let (fav, autres): (Vec<&Jeu>, Vec<&Jeu>) = jeux.into_iter().partition(|j| j.favori);
-        (
-            fav.iter().map(|j| j.id).collect(),
-            autres.iter().map(|j| j.id).collect(),
-        )
+        theme::appliquer(ctx, self.bib.config.theme, self.bib.config.accent_perso);
     }
 
     fn listes_visibles(&self) -> (Vec<u64>, Vec<u64>) {
-        self.trier_filtrer(&self.recherche, self.filtre_tag.as_deref(), self.filtre_statut)
+        let section = match &self.filtre_tag {
+            Some(t) => Section::Collection(t.clone()),
+            None => Section::Tout,
+        };
+        let ids = self.bib.lister(Filtre {
+            section: &section,
+            recherche: &self.recherche,
+            statut: self.filtre_statut,
+        });
+        self.bib.separer_favoris(&ids)
     }
 
     // ------------------------------------------------------------------
@@ -311,29 +250,14 @@ impl App {
     // ------------------------------------------------------------------
 
     fn ajouter_exes(&mut self, exes: Vec<PathBuf>) {
-        let mut ajoutes = 0;
-        let mut dernier_nom = String::new();
-        for exe in exes {
-            if self.config.contient_exe(&exe) {
-                continue;
-            }
-            let stem = exe
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let nom = scan::embellir_nom(&stem);
-            let id = self.config.nouvel_id();
-            dernier_nom = nom.clone();
-            self.config.jeux.push(Jeu::nouveau(id, nom, exe, None));
-            ajoutes += 1;
-        }
-        match ajoutes {
+        let bilan = self.bib.ajouter_exes(exes);
+        match bilan.nombre {
             0 => self.notifier("Ce jeu est déjà dans la bibliothèque."),
             1 => {
                 self.sauver();
                 self.notifier(format!(
-                    "« {dernier_nom} » ajouté. Clic droit pour le renommer."
+                    "« {} » ajouté. Clic droit pour le renommer.",
+                    bilan.dernier_nom
                 ));
             }
             n => {
@@ -341,7 +265,6 @@ impl App {
                 self.notifier(format!("{n} jeux ajoutés."));
             }
         }
-        self.verifier_manquants();
     }
 
     fn choisir_exe(&mut self) {
@@ -357,7 +280,7 @@ impl App {
     fn choisir_dossier_scan(&mut self, ctx: &egui::Context) {
         let mut dialogue = rfd::FileDialog::new()
             .set_title("Dossier contenant vos jeux (un sous-dossier par jeu)");
-        if let Some(d) = &self.config.dernier_dossier_scan {
+        if let Some(d) = &self.bib.config.dernier_dossier_scan {
             dialogue = dialogue.set_directory(d);
         }
         if let Some(dossier) = dialogue.pick_folder() {
@@ -369,15 +292,10 @@ impl App {
         if self.scan.is_some() {
             return;
         }
-        self.config.dernier_dossier_scan = Some(dossier.clone());
+        self.bib.config.dernier_dossier_scan = Some(dossier.clone());
         self.sauver();
 
-        let existants: HashSet<String> = self
-            .config
-            .jeux
-            .iter()
-            .map(|j| cle_chemin(&j.exe))
-            .collect();
+        let existants = self.bib.cles_exes();
         let (tx, rx) = channel();
         let annule = Arc::new(AtomicBool::new(false));
         let annule_thread = Arc::clone(&annule);
@@ -438,25 +356,13 @@ impl App {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Actions sur les jeux
+    // ------------------------------------------------------------------
+
     fn importer_revue(&mut self, candidats: Vec<Candidat>) {
-        let mut n = 0;
-        for c in candidats.into_iter().filter(|c| c.coche) {
-            if self.config.contient_exe(&c.exe) {
-                continue;
-            }
-            let id = self.config.nouvel_id();
-            let nom = if c.nom.trim().is_empty() {
-                c.groupe.clone()
-            } else {
-                c.nom.trim().to_string()
-            };
-            self.config
-                .jeux
-                .push(Jeu::nouveau(id, nom, c.exe, Some(c.cible_suppression)));
-            n += 1;
-        }
+        let n = self.bib.importer_candidats(candidats);
         self.sauver();
-        self.verifier_manquants();
         self.notifier(match n {
             0 => "Aucun jeu importé.".to_string(),
             1 => "1 jeu importé.".to_string(),
@@ -464,21 +370,15 @@ impl App {
         });
     }
 
-    // ------------------------------------------------------------------
-    // Actions sur les jeux
-    // ------------------------------------------------------------------
-
     fn executer(&mut self, action: Action, ctx: &egui::Context) {
         match action {
             Action::Lancer(id) => self.lancer(id, ctx),
             Action::BasculerFavori(id) => {
-                if let Some(j) = self.config.jeu_mut(id) {
-                    j.favori = !j.favori;
-                }
+                self.bib.basculer_favori(id);
                 self.sauver();
             }
             Action::DebuterRenommage(id) => {
-                if let Some(j) = self.jeu(id) {
+                if let Some(j) = self.bib.jeu(id) {
                     self.renommage = Some(Renommage {
                         id,
                         texte: j.nom.clone(),
@@ -487,32 +387,25 @@ impl App {
                 }
             }
             Action::Renommer(id, nom) => {
-                let nom = nom.trim().to_string();
-                if !nom.is_empty() {
-                    if let Some(j) = self.config.jeu_mut(id) {
-                        j.nom = nom;
-                    }
+                if self.bib.renommer(id, &nom) {
                     self.sauver();
                 }
             }
             Action::ChangerIcone(id) => self.changer_icone(id),
             Action::RetablirIcone(id) => {
-                let ancien = self.config.jeu_mut(id).and_then(|j| j.icone_perso.take());
-                if let Some(nom) = ancien {
-                    let _ = std::fs::remove_file(self.dossiers.icones.join(nom));
-                }
+                self.bib.changer_icone(id, None);
                 self.icones.invalider(id);
                 self.sauver();
             }
             Action::OuvrirEmplacement(id) => {
-                if let Some(exe) = self.jeu(id).map(|j| j.exe.clone())
+                if let Some(exe) = self.bib.jeu(id).map(|j| j.exe.clone())
                     && let Err(e) = platform::ouvrir_dans_explorateur(&exe)
                 {
                     self.notifier_erreur(format!("Impossible d'ouvrir l'emplacement : {e}"));
                 }
             }
             Action::EditerArguments(id) => {
-                if let Some(j) = self.jeu(id) {
+                if let Some(j) = self.bib.jeu(id) {
                     self.dialogue = Some(Dialogue::Arguments {
                         id,
                         texte: j.arguments.clone(),
@@ -526,7 +419,7 @@ impl App {
                 });
             }
             Action::EditerNotes(id) => {
-                if let Some(j) = self.jeu(id) {
+                if let Some(j) = self.bib.jeu(id) {
                     self.dialogue = Some(Dialogue::Notes {
                         id,
                         statut: j.statut,
@@ -537,8 +430,8 @@ impl App {
             Action::EditerVisuels(id) => self.ouvrir_visuels(id),
             Action::DemanderRetrait(id) => self.dialogue = Some(Dialogue::Retirer(id)),
             Action::DemanderSuppression(id) => {
-                let Some(jeu) = self.jeu(id) else { return };
-                self.dialogue = Some(match self.verifier_suppression(jeu) {
+                let Some(jeu) = self.bib.jeu(id) else { return };
+                self.dialogue = Some(match self.bib.verifier_suppression(jeu) {
                     Ok(cible) => Dialogue::Supprimer { id, cible },
                     Err(raison) => Dialogue::SuppressionRefusee { id, raison },
                 });
@@ -547,41 +440,28 @@ impl App {
     }
 
     fn lancer(&mut self, id: u64, ctx: &egui::Context) {
-        let Some(jeu) = self.jeu(id).cloned() else {
-            return;
-        };
-        if !jeu.exe.is_file() {
-            self.manquants.insert(id);
-            self.dialogue = Some(Dialogue::Introuvable(id));
-            return;
-        }
         let suivi_existant = self.parties.iter().any(|p| p.id == id);
-        let mut cible = partie::Cible::nouvelle(&jeu.exe, jeu.dossier_jeu().as_deref());
-        if !suivi_existant {
-            cible.ignorer_existants(&platform::processus_actifs());
-        }
-        match platform::lancer(&jeu.exe, &jeu.arguments) {
-            Ok(()) => {
-                if let Some(j) = self.config.jeu_mut(id) {
-                    j.dernier_lancement = Some(maintenant());
-                    j.nb_lancements += 1;
-                }
+        match self.bib.lancer(id, suivi_existant) {
+            Ok(lancement) => {
                 self.sauver();
-                self.notifier(format!("Lancement de « {} »…", jeu.nom));
-
+                self.notifier(format!("Lancement de « {} »…", lancement.nom));
                 if !suivi_existant {
                     self.parties.push(PartieEnCours {
                         id,
-                        nom: jeu.nom.clone(),
+                        nom: lancement.nom,
                         debut: None,
-                        reception: partie::surveiller(cible, ctx.clone()),
+                        reception: partie::surveiller(lancement.cible, ctx.clone()),
                     });
                 }
                 // Le launcher s'efface pendant la partie et revient à la fin.
                 self.reduire_a = Some(Instant::now() + DELAI_REDUCTION);
                 ctx.request_repaint_after(DELAI_REDUCTION);
             }
-            Err(e) => self.notifier_erreur(format!("Impossible de lancer « {} » : {e}", jeu.nom)),
+            Err(ErreurLancement::JeuInconnu) => {}
+            Err(ErreurLancement::Introuvable) => self.dialogue = Some(Dialogue::Introuvable(id)),
+            Err(ErreurLancement::Refus { nom, raison }) => {
+                self.notifier_erreur(format!("Impossible de lancer « {nom} » : {raison}"));
+            }
         }
     }
 
@@ -619,7 +499,7 @@ impl App {
             match mesure {
                 Some((debut, fin)) => {
                     let duree = fin.saturating_sub(debut);
-                    if let Some(j) = self.config.jeu_mut(id) {
+                    if let Some(j) = self.bib.config.jeu_mut(id) {
                         j.ajouter_session(debut, duree);
                     }
                     self.sauver();
@@ -636,7 +516,7 @@ impl App {
 
         if self.parties.is_empty() {
             self.reduire_a = None;
-            if self.config.fermer_apres_lancement {
+            if self.bib.config.fermer_apres_lancement {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -651,19 +531,19 @@ impl App {
         let mut modifie = false;
         for p in std::mem::take(&mut self.parties) {
             if let Some(debut) = p.debut
-                && let Some(j) = self.config.jeu_mut(p.id)
+                && let Some(j) = self.bib.config.jeu_mut(p.id)
             {
                 j.ajouter_session(debut, fin.saturating_sub(debut));
                 modifie = true;
             }
         }
         if modifie {
-            let _ = self.config.sauvegarder(&self.dossiers.config);
+            let _ = self.bib.sauver();
         }
     }
 
     fn changer_icone(&mut self, id: u64) {
-        let Some(nom_jeu) = self.jeu(id).map(|j| j.nom.clone()) else {
+        let Some(nom_jeu) = self.bib.jeu(id).map(|j| j.nom.clone()) else {
             return;
         };
         let Some(fichier) = rfd::FileDialog::new()
@@ -673,15 +553,9 @@ impl App {
         else {
             return;
         };
-        match icons::importer_icone(&fichier, id, &self.dossiers) {
+        match icons::importer_icone(&fichier, id, &self.bib.dossiers) {
             Ok(nouveau) => {
-                let ancien = self
-                    .config
-                    .jeu_mut(id)
-                    .and_then(|j| j.icone_perso.replace(nouveau));
-                if let Some(a) = ancien {
-                    let _ = std::fs::remove_file(self.dossiers.icones.join(a));
-                }
+                self.bib.changer_icone(id, Some(nouveau));
                 self.icones.invalider(id);
                 self.sauver();
             }
@@ -690,92 +564,14 @@ impl App {
     }
 
     fn retirer(&mut self, id: u64) {
-        if let Some(pos) = self.config.jeux.iter().position(|j| j.id == id) {
-            let jeu = self.config.jeux.remove(pos);
-            if let Some(nom) = jeu.icone_perso {
-                let _ = std::fs::remove_file(self.dossiers.icones.join(nom));
-            }
-            for nom in [jeu.jaquette, jeu.banniere].into_iter().flatten() {
-                let _ = std::fs::remove_file(self.dossiers.jaquettes.join(nom));
-            }
+        if self.bib.retirer(id).is_some() {
             self.icones.invalider(id);
-            self.manquants.remove(&id);
             self.sauver();
         }
     }
 
-    /// Garde-fous avant d'envoyer un dossier à la corbeille.
-    fn verifier_suppression(&self, jeu: &Jeu) -> Result<PathBuf, String> {
-        let cible = jeu
-            .dossier_a_supprimer()
-            .ok_or("Impossible de déterminer le dossier du jeu.")?;
-
-        if !cible.exists() {
-            return Err("Le dossier du jeu n'existe plus sur le disque.".into());
-        }
-        if !cible.is_absolute() {
-            return Err("Chemin relatif refusé par sécurité.".into());
-        }
-        let profondeur = cible
-            .components()
-            .filter(|c| matches!(c, std::path::Component::Normal(_)))
-            .count();
-        if profondeur < 2 {
-            return Err(format!(
-                "« {} » est trop proche de la racine du disque.",
-                cible.display()
-            ));
-        }
-        if !jeu.exe.starts_with(&cible) && jeu.exe != cible {
-            return Err("L'exécutable n'est pas dans le dossier ciblé.".into());
-        }
-
-        let mut proteges: Vec<PathBuf> = vec![self.dossiers.racine.clone()];
-        if let Some(d) = std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(Path::to_path_buf))
-        {
-            proteges.push(d);
-        }
-        for var in [
-            "USERPROFILE",
-            "HOME",
-            "PROGRAMFILES",
-            "PROGRAMFILES(X86)",
-            "WINDIR",
-            "PUBLIC",
-        ] {
-            if let Some(v) = std::env::var_os(var) {
-                proteges.push(PathBuf::from(v));
-            }
-        }
-        if let Some(d) = &self.config.dernier_dossier_scan {
-            proteges.push(d.clone());
-            proteges.push(scan::resoudre_racine(d));
-        }
-        let cle = cle_chemin(&cible);
-        for p in &proteges {
-            let cp = cle_chemin(p);
-            // Refus si la cible EST un dossier protégé ou le CONTIENT.
-            if cle == cp || cp.starts_with(&format!("{cle}\\")) {
-                return Err(format!("« {} » est un dossier protégé.", cible.display()));
-            }
-        }
-
-        // Un autre jeu de la bibliothèque partage-t-il ce dossier ?
-        let partage = self
-            .config
-            .jeux
-            .iter()
-            .any(|j| j.id != jeu.id && j.exe.starts_with(&cible) && cible.is_dir());
-        if partage {
-            return Err("D'autres jeux de la bibliothèque se trouvent dans ce dossier.".into());
-        }
-        Ok(cible)
-    }
-
     fn supprimer(&mut self, id: u64, cible: PathBuf, ctx: &egui::Context) {
-        let nom = self.jeu(id).map(|j| j.nom.clone()).unwrap_or_default();
+        let nom = self.bib.jeu(id).map(|j| j.nom.clone()).unwrap_or_default();
         let message = format!("Suppression de « {nom} » en cours…");
         self.retirer(id);
         let (tx, rx) = channel();
@@ -810,7 +606,7 @@ impl App {
     }
 
     fn vider_cache(&mut self) {
-        if let Ok(entrees) = std::fs::read_dir(&self.dossiers.cache) {
+        if let Ok(entrees) = std::fs::read_dir(&self.bib.dossiers.cache) {
             for e in entrees.flatten() {
                 let _ = std::fs::remove_file(e.path());
             }
@@ -824,39 +620,24 @@ impl App {
     // ------------------------------------------------------------------
 
     fn rafraichir_sauvegardes(&mut self) {
-        self.sauvegardes = sauvegarde::lister(&self.dossiers.sauvegardes);
+        self.sauvegardes = sauvegarde::lister(&self.bib.dossiers.sauvegardes);
     }
 
     /// Remplace toute la configuration (restauration ou import).
     fn remplacer_config(&mut self, mut nouvelle: Config, ctx: &egui::Context) {
-        if let Err(e) = sauvegarde::sauvegarde_immediate(&self.dossiers, "avant-remplacement") {
+        if let Err(e) = sauvegarde::sauvegarde_immediate(&self.bib.dossiers, "avant-remplacement") {
             self.notifier_erreur(format!(
                 "Copie de sécurité impossible, opération annulée : {e}"
             ));
             return;
         }
-        // Les icônes personnalisées absentes de ce PC sont oubliées.
-        for j in &mut nouvelle.jeux {
-            if j
-                .icone_perso
-                .as_ref()
-                .is_some_and(|n| !self.dossiers.icones.join(n).is_file())
-            {
-                j.icone_perso = None;
-            }
-            let dossier = &self.dossiers.jaquettes;
-            for image in [&mut j.jaquette, &mut j.banniere] {
-                if image.as_ref().is_some_and(|n| !dossier.join(n).is_file()) {
-                    *image = None;
-                }
-            }
-        }
-        self.config = nouvelle;
+        self.bib.oublier_images_absentes(&mut nouvelle);
+        self.bib.config = nouvelle;
         self.filtre_tag = None;
         self.filtre_statut = None;
         self.renommage = None;
         self.icones.tout_invalider();
-        self.verifier_manquants();
+        self.bib.verifier_manquants();
         self.appliquer_theme(ctx);
         self.sauver();
         self.rafraichir_sauvegardes();
@@ -875,10 +656,10 @@ impl App {
         else {
             return;
         };
-        match sauvegarde::exporter(&self.config, &chemin) {
+        match sauvegarde::exporter(&self.bib.config, &chemin) {
             Ok(()) => self.notifier(format!(
                 "Bibliothèque exportée ({} jeux).",
-                self.config.jeux.len()
+                self.bib.config.jeux.len()
             )),
             Err(e) => self.notifier_erreur(format!("Export impossible : {e}")),
         }
@@ -996,7 +777,7 @@ impl App {
                 Vue::Bibliotheque => {
                     ui.heading("Bibliothèque");
                     ui.label(
-                        RichText::new(format!("{} jeux", self.config.jeux.len()))
+                        RichText::new(format!("{} jeux", self.bib.config.jeux.len()))
                             .color(p.fg_muted),
                     );
                 }
@@ -1053,50 +834,50 @@ impl App {
 
                     ui.add_space(8.0);
                     egui::ComboBox::from_id_salt("affichage")
-                        .selected_text(match self.config.affichage {
+                        .selected_text(match self.bib.config.affichage {
                             Affichage::Grille => "Icônes",
                             Affichage::Jaquettes => "Jaquettes",
                             Affichage::Liste => "Liste",
                         })
                         .show_ui(ui, |ui| {
-                            let avant = self.config.affichage;
-                            ui.selectable_value(&mut self.config.affichage, Affichage::Grille, "Icônes");
+                            let avant = self.bib.config.affichage;
+                            ui.selectable_value(&mut self.bib.config.affichage, Affichage::Grille, "Icônes");
                             ui.selectable_value(
-                                &mut self.config.affichage,
+                                &mut self.bib.config.affichage,
                                 Affichage::Jaquettes,
                                 "Jaquettes",
                             );
-                            ui.selectable_value(&mut self.config.affichage, Affichage::Liste, "Liste");
-                            if avant != self.config.affichage {
+                            ui.selectable_value(&mut self.bib.config.affichage, Affichage::Liste, "Liste");
+                            if avant != self.bib.config.affichage {
                                 self.sauver();
                             }
                         });
                     egui::ComboBox::from_id_salt("tri")
-                        .selected_text(match self.config.tri {
+                        .selected_text(match self.bib.config.tri {
                             Tri::Nom => "Tri : nom",
                             Tri::DernierLancement => "Tri : récents",
                             Tri::DateAjout => "Tri : ajout",
                             Tri::TempsDeJeu => "Tri : temps de jeu",
                         })
                         .show_ui(ui, |ui| {
-                            let avant = self.config.tri;
-                            ui.selectable_value(&mut self.config.tri, Tri::Nom, "Nom");
+                            let avant = self.bib.config.tri;
+                            ui.selectable_value(&mut self.bib.config.tri, Tri::Nom, "Nom");
                             ui.selectable_value(
-                                &mut self.config.tri,
+                                &mut self.bib.config.tri,
                                 Tri::DernierLancement,
                                 "Joués récemment",
                             );
                             ui.selectable_value(
-                                &mut self.config.tri,
+                                &mut self.bib.config.tri,
                                 Tri::DateAjout,
                                 "Ajoutés récemment",
                             );
                             ui.selectable_value(
-                                &mut self.config.tri,
+                                &mut self.bib.config.tri,
                                 Tri::TempsDeJeu,
                                 "Les plus joués",
                             );
-                            if avant != self.config.tri {
+                            if avant != self.bib.config.tri {
                                 self.sauver();
                             }
                         });
@@ -1133,8 +914,8 @@ impl App {
 
     /// Rangée de filtres par statut et par tag, sous l'en-tête.
     fn filtres(&mut self, ui: &mut egui::Ui) {
-        let tags = self.config.tags();
-        let statuts = self.config.statuts();
+        let tags = self.bib.config.tags();
+        let statuts = self.bib.config.statuts();
         if self
             .filtre_statut
             .is_some_and(|f| !statuts.iter().any(|(s, _)| *s == f))
@@ -1181,7 +962,7 @@ impl App {
     fn bibliotheque(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let ctx = ui.ctx().clone();
         let p = theme::p();
-        if self.config.jeux.is_empty() {
+        if self.bib.config.jeux.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.25);
                 ui.label(RichText::new("Aucun jeu dans votre bibliothèque").size(22.0).color(p.fg));
@@ -1218,7 +999,7 @@ impl App {
             egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 0)).show(ui, |ui| {
                 self.filtres(ui);
 
-                if !filtre_actif && self.config.afficher_recents {
+                if !filtre_actif && self.bib.config.afficher_recents {
                     self.recents(ui, actions);
                 }
 
@@ -1267,15 +1048,15 @@ impl App {
     }
 
     fn afficher_jeux(&mut self, ui: &mut egui::Ui, ids: &[u64], actions: &mut Vec<Action>) {
-        match self.config.affichage {
+        match self.bib.config.affichage {
             Affichage::Grille | Affichage::Jaquettes => self.grille(ui, ids, actions),
             Affichage::Liste => self.liste(ui, ids, actions),
         }
     }
 
     fn grille(&mut self, ui: &mut egui::Ui, ids: &[u64], actions: &mut Vec<Action>) {
-        let cote = self.config.taille_tuile;
-        let hauteur = match self.config.affichage {
+        let cote = self.bib.config.taille_tuile;
+        let hauteur = match self.bib.config.affichage {
             Affichage::Jaquettes => cote * RATIO_JAQUETTE,
             Affichage::Grille | Affichage::Liste => cote,
         };
@@ -1415,12 +1196,12 @@ impl App {
     }
 
     fn tuile(&mut self, ui: &mut egui::Ui, id: u64, taille: Vec2, actions: &mut Vec<Action>) {
-        let Some(jeu) = self.jeu(id).cloned() else {
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
             return;
         };
         let p = theme::p();
-        let manquant = self.manquants.contains(&id);
-        let cote = self.config.taille_tuile;
+        let manquant = self.bib.manquants.contains(&id);
+        let cote = self.bib.config.taille_tuile;
 
         let (rect, reponse) = ui.allocate_exact_size(taille, Sense::click());
         if !ui.is_rect_visible(rect) {
@@ -1437,7 +1218,7 @@ impl App {
             rect.min + Vec2::new(12.0, 10.0),
             Vec2::new(cote, taille.y - 56.0),
         );
-        if self.config.affichage == Affichage::Jaquettes {
+        if self.bib.config.affichage == Affichage::Jaquettes {
             self.dessiner_jaquette(ui, &jeu, zone_icone, manquant);
         } else {
             self.dessiner_icone(ui, &jeu, zone_icone, manquant);
@@ -1620,8 +1401,8 @@ impl App {
                 .map(|j| j.nom.clone())
                 .unwrap_or_default()
         };
-        let tous_tags = self.config.tags();
-        let jeux = &self.config.jeux;
+        let tous_tags = self.bib.config.tags();
+        let jeux = &self.bib.config.jeux;
 
         let reponse = egui::Modal::new(egui::Id::unique("dialogue")).show(ctx, |ui| {
             ui.set_max_width(480.0);
@@ -1756,14 +1537,7 @@ impl App {
                     ui.horizontal(|ui| {
                         if ui.button("Retirer").clicked() {
                             action = Some(Box::new(|app, _| {
-                                let ids: Vec<u64> = app
-                                    .config
-                                    .jeux
-                                    .iter()
-                                    .filter(|j| !j.exe.is_file())
-                                    .map(|j| j.id)
-                                    .collect();
-                                for id in ids {
+                                for id in app.bib.ids_introuvables() {
                                     app.retirer(id);
                                 }
                             }));
@@ -1788,11 +1562,9 @@ impl App {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui.button("Enregistrer").clicked() || entree {
-                            let t = texte.trim().to_string();
+                            let t = texte.clone();
                             action = Some(Box::new(move |app, _| {
-                                if let Some(j) = app.config.jeu_mut(id) {
-                                    j.arguments = t;
-                                }
+                                app.bib.definir_arguments(id, &t);
                                 app.sauver();
                             }));
                         }
@@ -1824,7 +1596,7 @@ impl App {
                             {
                                 let t = t.clone();
                                 modification = Some(Box::new(move |app, _| {
-                                    if let Some(j) = app.config.jeu_mut(id) {
+                                    if let Some(j) = app.bib.config.jeu_mut(id) {
                                         j.retirer_tag(&t);
                                     }
                                     app.sauver();
@@ -1853,7 +1625,7 @@ impl App {
                     if ajouter && !saisie.trim().is_empty() {
                         let t = std::mem::take(saisie);
                         modification = Some(Box::new(move |app, _| {
-                            if let Some(j) = app.config.jeu_mut(id) {
+                            if let Some(j) = app.bib.config.jeu_mut(id) {
                                 j.ajouter_tag(&t);
                             }
                             app.sauver();
@@ -1874,7 +1646,7 @@ impl App {
                                 if puce(ui, &format!("+ {t}"), false).clicked() {
                                     let t = t.clone();
                                     modification = Some(Box::new(move |app, _| {
-                                        if let Some(j) = app.config.jeu_mut(id) {
+                                        if let Some(j) = app.bib.config.jeu_mut(id) {
                                             j.ajouter_tag(&t);
                                         }
                                         app.sauver();
@@ -1911,12 +1683,10 @@ impl App {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui.button("Enregistrer").clicked() {
-                            let (s, t) = (*statut, texte.trim().to_string());
+                            let (s, t) = (*statut, texte.clone());
                             action = Some(Box::new(move |app, _| {
-                                if let Some(j) = app.config.jeu_mut(id) {
-                                    j.statut = s;
-                                    j.notes = t;
-                                }
+                                app.bib.definir_statut(id, s);
+                                app.bib.definir_notes(id, &t);
                                 app.sauver();
                             }));
                         }
@@ -1941,7 +1711,7 @@ impl App {
                                 if app.filtre_tag.as_ref().is_some_and(|f| f.eq_ignore_ascii_case(&a)) {
                                     app.filtre_tag = Some(n.clone());
                                 }
-                                app.config.renommer_tag(&a, &n);
+                                app.bib.config.renommer_tag(&a, &n);
                                 app.sauver();
                             }));
                         }
@@ -1960,7 +1730,7 @@ impl App {
                         if ui.button("Supprimer le tag").clicked() {
                             let t = tag.clone();
                             action = Some(Box::new(move |app, _| {
-                                app.config.supprimer_tag(&t);
+                                app.bib.config.supprimer_tag(&t);
                                 app.sauver();
                             }));
                         }
@@ -2027,9 +1797,9 @@ impl App {
                         {
                             let c = (**config).clone();
                             action = Some(Box::new(move |app, _| {
-                                let n = app.config.fusionner(c);
+                                let n = app.bib.config.fusionner(c);
                                 app.sauver();
-                                app.verifier_manquants();
+                                app.bib.verifier_manquants();
                                 app.notifier(format!("{n} jeu(x) importé(s)."));
                             }));
                         }
@@ -2071,13 +1841,9 @@ impl App {
         else {
             return;
         };
-        if let Some(j) = self.config.jeu_mut(id) {
-            j.exe = fichier;
-            j.cible_suppression = None;
-        }
+        self.bib.relocaliser(id, fichier);
         self.icones.invalider(id);
         self.sauver();
-        self.verifier_manquants();
     }
 
     fn afficher_notification(&mut self, ctx: &egui::Context) {
@@ -2318,7 +2084,7 @@ impl eframe::App for App {
                 self.reduire_a = None;
                 if self.parties.is_empty() {
                     // Rien à suivre (lancement raté entre-temps) : comportement d'origine.
-                    if self.config.fermer_apres_lancement {
+                    if self.bib.config.fermer_apres_lancement {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 } else {

@@ -109,11 +109,11 @@ impl App {
         c: &Colonnes,
         actions: &mut Vec<Action>,
     ) {
-        let Some(jeu) = self.jeu(id).cloned() else {
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
             return;
         };
         let p = theme::p();
-        let manquant = self.manquants.contains(&id);
+        let manquant = self.bib.manquants.contains(&id);
         let (rect, reponse) =
             ui.allocate_exact_size(Vec2::new(largeur, HAUTEUR_LIGNE), Sense::click());
         if !ui.is_rect_visible(rect) {
@@ -193,7 +193,7 @@ impl App {
         let largeur = ui.available_width();
         let tenues = ((largeur + ECART_RECENTES) / (LARGEUR_MIN_RECENTE + ECART_RECENTES)).floor();
         let n = (tenues as usize).clamp(1, RECENTS_MAX);
-        let ids = self.config.recents(n);
+        let ids = self.bib.config.recents(n);
         if ids.is_empty() {
             return;
         }
@@ -215,7 +215,7 @@ impl App {
         taille: Vec2,
         actions: &mut Vec<Action>,
     ) {
-        let Some(jeu) = self.jeu(id).cloned() else {
+        let Some(jeu) = self.bib.jeu(id).cloned() else {
             return;
         };
         let p = theme::p();
@@ -244,7 +244,7 @@ impl App {
         let marge = (rect.height() - 60.0) / 2.0;
         let zone_icone =
             egui::Rect::from_min_size(rect.min + Vec2::splat(marge), Vec2::splat(60.0));
-        self.dessiner_icone(ui, &jeu, zone_icone, self.manquants.contains(&id));
+        self.dessiner_icone(ui, &jeu, zone_icone, self.bib.manquants.contains(&id));
 
         let x = zone_icone.right() + 12.0;
         let largeur = rect.right() - x - 10.0;

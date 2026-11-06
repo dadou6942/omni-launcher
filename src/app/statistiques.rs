@@ -8,7 +8,7 @@ const TOP: usize = 10;
 impl App {
     pub(super) fn statistiques(&mut self, ui: &mut egui::Ui) {
         let p = theme::p();
-        let jeux = &self.config.jeux;
+        let jeux = &self.bib.config.jeux;
         let total: u64 = jeux.iter().map(|j| j.temps_jeu).sum();
         let maintenant = maintenant();
 

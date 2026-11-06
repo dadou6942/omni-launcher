@@ -2,6 +2,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod bibliotheque;
 mod config;
 mod icons;
 mod maj;

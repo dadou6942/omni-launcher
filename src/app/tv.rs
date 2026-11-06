@@ -64,8 +64,8 @@ fn deplacer(i: usize, n: usize, colonnes: usize, c: Commande) -> usize {
 impl App {
     fn filtres_tv(&self) -> Vec<FiltreTv> {
         let mut f = vec![FiltreTv::Tous, FiltreTv::Favoris];
-        f.extend(self.config.statuts().into_iter().map(|(s, _)| FiltreTv::Statut(s)));
-        f.extend(self.config.tags().into_iter().map(|(t, _)| FiltreTv::Tag(t)));
+        f.extend(self.bib.config.statuts().into_iter().map(|(s, _)| FiltreTv::Statut(s)));
+        f.extend(self.bib.config.tags().into_iter().map(|(t, _)| FiltreTv::Tag(t)));
         f
     }
 
@@ -78,12 +78,18 @@ impl App {
     }
 
     fn ids_tv(&self) -> Vec<u64> {
-        let (fav, autres) = match self.filtre_tv() {
-            FiltreTv::Tous => self.trier_filtrer("", None, None),
-            FiltreTv::Favoris => (self.trier_filtrer("", None, None).0, Vec::new()),
-            FiltreTv::Statut(s) => self.trier_filtrer("", None, Some(s)),
-            FiltreTv::Tag(t) => self.trier_filtrer("", Some(&t), None),
+        let (section, statut) = match self.filtre_tv() {
+            FiltreTv::Tous => (Section::Tout, None),
+            FiltreTv::Favoris => (Section::Favoris, None),
+            FiltreTv::Statut(s) => (Section::Tout, Some(s)),
+            FiltreTv::Tag(t) => (Section::Collection(t), None),
         };
+        let ids = self.bib.lister(Filtre {
+            section: &section,
+            recherche: "",
+            statut,
+        });
+        let (fav, autres) = self.bib.separer_favoris(&ids);
         fav.into_iter().chain(autres).collect()
     }
 
@@ -242,7 +248,7 @@ impl App {
         if ids.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.3);
-                let texte = if self.config.jeux.is_empty() {
+                let texte = if self.bib.config.jeux.is_empty() {
                     "Aucun jeu dans la bibliothèque."
                 } else {
                     "Aucun jeu dans ce filtre."
@@ -253,7 +259,7 @@ impl App {
         }
 
         // Dès qu'un jeu a une jaquette, les tuiles passent au format portrait.
-        let portrait = self.config.jeux.iter().any(|j| j.jaquette.is_some());
+        let portrait = self.bib.config.jeux.iter().any(|j| j.jaquette.is_some());
         let (cote, hauteur) = if portrait {
             let cote = (ui.available_height() / 3.6).clamp(120.0, 200.0);
             (cote, cote * RATIO_JAQUETTE)
@@ -289,7 +295,7 @@ impl App {
     }
 
     fn tv_tuile(&mut self, ui: &mut egui::Ui, id: u64, taille: Vec2, portrait: bool, actions: &mut Vec<Action>) {
-        let Some(jeu) = self.jeu(id).cloned() else { return };
+        let Some(jeu) = self.bib.jeu(id).cloned() else { return };
         let p = theme::p();
         let selectionne = self.tv.selection == Some(id);
         let (rect, reponse) = ui.allocate_exact_size(taille, Sense::click());
@@ -316,7 +322,7 @@ impl App {
             rect.min + Vec2::new(14.0, 12.0),
             Vec2::new(taille.x - 28.0, taille.y - 52.0),
         );
-        let manquant = self.manquants.contains(&id);
+        let manquant = self.bib.manquants.contains(&id);
         if portrait {
             self.dessiner_jaquette(ui, &jeu, zone_icone, manquant);
         } else {
@@ -360,7 +366,7 @@ impl App {
 
     fn tv_details(&mut self, ui: &mut egui::Ui) {
         let p = theme::p();
-        let jeu = self.tv.selection.and_then(|id| self.jeu(id)).cloned();
+        let jeu = self.tv.selection.and_then(|id| self.bib.jeu(id)).cloned();
         // La bannière passe sous le texte : sa taille dépend de celui-ci, on
         // réserve donc sa place dans la liste de dessin avant de le poser.
         let mut peintre = ui.painter().clone();
@@ -382,7 +388,7 @@ impl App {
                         if !j.notes.is_empty() {
                             ui.label(RichText::new(format!("📝 {}", apercu_notes(&j.notes))).color(p.fg_muted));
                         }
-                        if self.manquants.contains(&j.id) {
+                        if self.bib.manquants.contains(&j.id) {
                             ui.label(RichText::new("Exécutable introuvable").color(p.danger));
                         }
                     }

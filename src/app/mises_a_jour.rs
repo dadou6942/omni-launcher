@@ -116,7 +116,7 @@ impl App {
             }
         });
         if ui
-            .checkbox(&mut self.config.verifier_maj, "Vérifier au démarrage")
+            .checkbox(&mut self.bib.config.verifier_maj, "Vérifier au démarrage")
             .changed()
         {
             self.sauver();

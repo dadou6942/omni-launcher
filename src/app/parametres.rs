@@ -19,7 +19,7 @@ impl App {
                         ui.spacing_mut().slider_width = 260.0;
                         ui.label("Taille des icônes");
                         let r = ui.add(
-                            egui::Slider::new(&mut self.config.taille_tuile, TAILLE_TUILE_MIN..=TAILLE_TUILE_MAX)
+                            egui::Slider::new(&mut self.bib.config.taille_tuile, TAILLE_TUILE_MIN..=TAILLE_TUILE_MAX)
                                 .step_by(5.0)
                                 .suffix(" px"),
                         );
@@ -28,14 +28,14 @@ impl App {
                         }
                     });
                     if ui
-                        .checkbox(&mut self.config.afficher_recents, "Afficher la section « Joués récemment »")
+                        .checkbox(&mut self.bib.config.afficher_recents, "Afficher la section « Joués récemment »")
                         .changed()
                     {
                         self.sauver();
                     }
                     if ui
                         .checkbox(
-                            &mut self.config.fermer_apres_lancement,
+                            &mut self.bib.config.fermer_apres_lancement,
                             "Fermer le launcher à la fin de la partie",
                         )
                         .changed()
@@ -55,16 +55,16 @@ impl App {
                 carte(ui, "Apparence", |ui| self.carte_apparence(ui, &ctx));
 
                 carte(ui, "Bibliothèque", |ui| {
-                    let favoris = self.config.jeux.iter().filter(|j| j.favori).count();
-                    ui.label(format!("{} jeux, dont {} favoris.", self.config.jeux.len(), favoris));
-                    if let Some(d) = &self.config.dernier_dossier_scan {
+                    let favoris = self.bib.config.jeux.iter().filter(|j| j.favori).count();
+                    ui.label(format!("{} jeux, dont {} favoris.", self.bib.config.jeux.len(), favoris));
+                    if let Some(d) = &self.bib.config.dernier_dossier_scan {
                         ui.label(RichText::new(format!("Dernier dossier scanné : {}", d.display())).color(p.fg_muted));
                     }
                     ui.horizontal_wrapped(|ui| {
                         if ui.add_enabled(self.scan.is_none(), egui::Button::new("🗁  Scanner un dossier…")).clicked() {
                             self.choisir_dossier_scan(&ctx);
                         }
-                        if let Some(d) = self.config.dernier_dossier_scan.clone()
+                        if let Some(d) = self.bib.config.dernier_dossier_scan.clone()
                             && ui
                                 .add_enabled(self.scan.is_none(), egui::Button::new("🔄  Re-scanner"))
                                 .on_hover_text("Ajoute les jeux installés depuis le dernier scan")
@@ -75,14 +75,14 @@ impl App {
                     });
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("Vérifier les jeux introuvables").clicked() {
-                            self.verifier_manquants();
-                            let n = self.manquants.len();
+                            self.bib.verifier_manquants();
+                            let n = self.bib.manquants.len();
                             self.notifier(match n {
                                 0 => "Tous les jeux sont présents.".to_string(),
                                 n => format!("{n} jeu(x) introuvable(s)."),
                             });
                         }
-                        let n = self.manquants.len();
+                        let n = self.bib.manquants.len();
                         if ui
                             .add_enabled(n > 0, egui::Button::new(format!("Retirer les introuvables ({n})")))
                             .clicked()
@@ -102,10 +102,10 @@ impl App {
 
                 carte(ui, "Données", |ui| {
                     ui.label(RichText::new("Configuration, icônes personnalisées, sauvegardes et cache :").color(p.fg_muted));
-                    ui.label(RichText::new(self.dossiers.racine.display().to_string()).color(p.accent).strong());
+                    ui.label(RichText::new(self.bib.dossiers.racine.display().to_string()).color(p.accent).strong());
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("🗁  Ouvrir le dossier").clicked() {
-                            let racine = self.dossiers.racine.clone();
+                            let racine = self.bib.dossiers.racine.clone();
                             if let Err(e) = platform::ouvrir_dossier(&racine) {
                                 self.notifier_erreur(e);
                             }
@@ -138,10 +138,10 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
             for t in theme::TOUS {
-                if apercu_theme(ui, t, self.config.theme == t).clicked() && self.config.theme != t {
-                    self.config.theme = t;
+                if apercu_theme(ui, t, self.bib.config.theme == t).clicked() && self.bib.config.theme != t {
+                    self.bib.config.theme = t;
                     // Un nouveau thème vient avec sa propre couleur d'accent.
-                    self.config.accent_perso = None;
+                    self.bib.config.accent_perso = None;
                     self.appliquer_theme(ctx);
                     self.sauver();
                 }
@@ -153,12 +153,12 @@ impl App {
             let a = p.accent;
             let mut couleur = [a.r(), a.g(), a.b()];
             if egui::color_picker::color_edit_button_srgb(ui, &mut couleur).changed() {
-                self.config.accent_perso = Some(couleur);
+                self.bib.config.accent_perso = Some(couleur);
                 self.appliquer_theme(ctx);
                 self.sauvegarde_differee = true;
             }
-            if self.config.accent_perso.is_some() && ui.button("Couleur du thème").clicked() {
-                self.config.accent_perso = None;
+            if self.bib.config.accent_perso.is_some() && ui.button("Couleur du thème").clicked() {
+                self.bib.config.accent_perso = None;
                 self.appliquer_theme(ctx);
                 self.sauver();
             }
@@ -167,7 +167,7 @@ impl App {
 
     fn carte_tags(&mut self, ui: &mut egui::Ui) {
         let p = theme::p();
-        let tags = self.config.tags();
+        let tags = self.bib.config.tags();
         if tags.is_empty() {
             ui.label(
                 RichText::new("Aucun tag. Clic droit sur un jeu ➔ Tags… pour en créer (ex. Coop, Rétro, À finir).")
@@ -215,7 +215,7 @@ impl App {
                 self.choisir_import();
             }
             if ui.button("🗁  Ouvrir le dossier").clicked() {
-                let d = self.dossiers.sauvegardes.clone();
+                let d = self.bib.dossiers.sauvegardes.clone();
                 if let Err(e) = platform::ouvrir_dossier(&d) {
                     self.notifier_erreur(e);
                 }
